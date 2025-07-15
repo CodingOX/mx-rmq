@@ -17,10 +17,15 @@ class GlobalKeys(str, Enum):
 
     # 延时任务相关
     DELAY_TASKS = "delay:tasks"  # ZSet: 全局延时任务队列
+    DELAY_PUBSUB_CHANNEL = "delay:wakeup"  # PubSub: 延时任务唤醒通道
 
     # 死信队列相关
     DLQ_QUEUE = "dlq:queue"  # List: 死信队列
     DLQ_PAYLOAD_MAP = "dlq:payload:map"  # Hash: 死信队列消息存储
+
+    # 解析错误存储相关
+    PARSE_ERROR_QUEUE = "error:parse:queue"  # List: 解析错误消息队列
+    PARSE_ERROR_PAYLOAD_MAP = "error:parse:payload:map"  # Hash: 解析错误信息存储
 
     # 监控指标相关
     METRICS = "metrics"  # Hash: 系统监控指标
@@ -69,6 +74,7 @@ class KeyNamespace:
             GlobalKeys.PAYLOAD_MAP: "全局消息内容存储Hash",
             GlobalKeys.EXPIRE_MONITOR: "全局过期监控ZSet",
             GlobalKeys.DELAY_TASKS: "全局延时任务ZSet",
+            GlobalKeys.DELAY_PUBSUB_CHANNEL: "延时任务唤醒通知PubSub通道",
             GlobalKeys.DLQ_QUEUE: "死信队列List",
             GlobalKeys.DLQ_PAYLOAD_MAP: "死信队列消息存储Hash",
             GlobalKeys.METRICS: "系统监控指标Hash",

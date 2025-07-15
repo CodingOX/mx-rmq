@@ -6,22 +6,22 @@ Redis连接管理模块
 import redis.asyncio as aioredis
 
 from ..config import MQConfig
-from ..logging import LoggerService
+import logging
 
 
 class RedisConnectionManager:
     """Redis连接管理器"""
 
-    def __init__(self, config: MQConfig, logger_service: LoggerService) -> None:
+    def __init__(self, config: MQConfig, logger: logging.Logger) -> None:
         """
         初始化连接管理器
 
         Args:
             config: 消息队列配置
-            logger_service: 日志服务实例
+            logger: 日志器实例
         """
         self.config = config
-        self.logger_service = logger_service
+        self._logger = logger
         self.redis_pool: aioredis.ConnectionPool | None = None
         self.redis: aioredis.Redis | None = None
 
@@ -48,9 +48,7 @@ class RedisConnectionManager:
 
         # 测试连接
         await self.redis.ping()
-        self.logger_service.logger.info(
-            "Redis连接建立成功", redis_url=self.config.redis_url
-        )
+        self._logger.info(f"Redis连接建立成功 - redis_url={self.config.redis_url}")
 
         return self.redis
 
@@ -59,6 +57,6 @@ class RedisConnectionManager:
         try:
             if self.redis_pool:
                 await self.redis_pool.disconnect()
-                self.logger_service.logger.info("Redis连接池已关闭")
+                self._logger.info("Redis连接池已关闭")
         except Exception as e:
-            self.logger_service.log_error("清理Redis连接时出错", e)
+            self._logger.error("清理Redis连接时出错", exc_info=e)

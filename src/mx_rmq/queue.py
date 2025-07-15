@@ -21,7 +21,7 @@ from .core import (
     QueueContext,
     ScheduleService,
 )
-from .logging import LoggerService
+import logging
 from .message import Message, MessagePriority
 
 
@@ -37,14 +37,12 @@ class RedisMessageQueue:
         """
         self.config = config or MQConfig()
 
-        # 所有队列前缀
-
         # Redis连接
         self.redis_pool: aioredis.ConnectionPool | None = None
         self.redis: aioredis.Redis | None = None
 
-        # 日志服务
-        self.logger_service = LoggerService("RedisMessageQueue")
+        # 日志器
+        self._logger = logging.getLogger(__name__)
 
         # 核心上下文（延迟初始化）
         self.context: QueueContext | None = None
@@ -67,17 +65,19 @@ class RedisMessageQueue:
     @property
     def logger(self):
         """获取logger，保持向后兼容"""
-        return self.logger_service.logger
+        return self._logger
 
     def log_error(self, message: str, error: Exception, **kwargs) -> None:
         """记录错误日志"""
-        self.logger_service.log_error(message, error, **kwargs)
+        extra_info = f", {', '.join(f'{k}={v}' for k, v in kwargs.items())}" if kwargs else ""
+        self._logger.error(f"{message}{extra_info}", exc_info=error)
 
     def log_message_event(
         self, event: str, message_id: str, topic: str, **kwargs
     ) -> None:
         """记录消息事件"""
-        self.logger_service.log_message_event(event, message_id, topic, **kwargs)
+        extra_info = f", {', '.join(f'{k}={v}' for k, v in kwargs.items())}" if kwargs else ""
+        self._logger.info(f"{event} - message_id={message_id}, topic={topic}{extra_info}")
 
     async def initialize(self) -> None:
         """初始化连接和服务组件"""
@@ -94,14 +94,14 @@ class RedisMessageQueue:
 
             # 确保redis已初始化
             assert self.redis is not None, "Redis连接未初始化"
-            script_manager = LuaScriptManager(self.redis, self.logger_service)
+            script_manager = LuaScriptManager(self.redis, self._logger)
             lua_scripts = await script_manager.load_scripts()
 
             # 步骤3：创建核心上下文和服务组件
             await self._initialize_services(lua_scripts)
 
             self.initialized = True
-            self.logger_service.logger.info("消息队列初始化完成")
+            self._logger.info("消息队列初始化完成")
 
         except Exception as e:
             self.log_error("消息队列初始化失败", e)
@@ -125,8 +125,8 @@ class RedisMessageQueue:
 
         # 测试连接
         await self.redis.ping()
-        self.logger_service.logger.info(
-            "Redis连接建立成功", redis_url=self.config.redis_url
+        self._logger.info(
+            f"Redis连接建立成功, redis_url={self.config.redis_url}"
         )
 
     async def _initialize_services(self, lua_scripts: dict[str, AsyncScript]) -> None:
@@ -138,7 +138,7 @@ class RedisMessageQueue:
         self.context = QueueContext(
             config=self.config,
             redis=self.redis,
-            logger_service=self.logger_service,
+            logger=self._logger,
             lua_scripts=lua_scripts,
         )
 
@@ -152,7 +152,7 @@ class RedisMessageQueue:
         """设置信号处理器"""
 
         def signal_handler(signum: int, frame: Any) -> None:
-            self.logger_service.logger.info("收到停机信号", signal=signum)
+            self._logger.info(f"收到停机信号, signal={signum}")
             asyncio.create_task(self._graceful_shutdown())
 
         signal.signal(signal.SIGINT, signal_handler)
@@ -163,7 +163,7 @@ class RedisMessageQueue:
         try:
             if self.redis_pool:
                 await self.redis_pool.disconnect()
-                self.logger_service.logger.info("Redis连接池已关闭")
+                self._logger.info("Redis连接池已关闭")
         except Exception as e:
             self.log_error("清理资源时出错", e)
 
@@ -212,7 +212,7 @@ class RedisMessageQueue:
         message.meta.max_retries = self.config.max_retries
         message.meta.retry_delays = self.config.retry_delays.copy()
 
-        message_json = message.model_dump_json()
+        message_json = message.model_dump_json(by_alias=True, exclude_none=True)
 
         try:
             # 根据延迟时间选择生产策略
@@ -292,10 +292,15 @@ class RedisMessageQueue:
     ) -> None:
         """生产延时消息"""
         assert self.context is not None
+
+        # 使用增强版脚本，包含智能 pubsub 通知
         await self.context.lua_scripts["produce_delay"](
             keys=[
                 self.context.get_global_key(GlobalKeys.PAYLOAD_MAP),
                 self.context.get_global_key(GlobalKeys.DELAY_TASKS),
+                self.context.get_global_key(
+                    GlobalKeys.DELAY_PUBSUB_CHANNEL
+                ),  # pubsub 通道
             ],
             args=[message_id, payload_json, topic, execute_time],
         )
@@ -326,9 +331,7 @@ class RedisMessageQueue:
                 self._pending_handlers: dict[str, Callable] = {}
             self._pending_handlers[topic] = handler
 
-        self.logger_service.logger.info(
-            "消息处理器注册成功", topic=topic, handler=handler.__name__
-        )
+        self._logger.info(f"消息处理器注册成功, topic={topic}, handler={handler.__name__}")
 
     async def start_dispatch_consuming(self) -> None:
         """启动消费"""
@@ -349,11 +352,7 @@ class RedisMessageQueue:
         self.context.running = True
         self._setup_signal_handlers()
 
-        self.logger_service.logger.info(
-            "启动消息消费",
-            topics=list(self.context.handlers.keys()),
-            max_workers=self.config.max_workers,
-        )
+        self._logger.warn(f"启动消息消费, topics={list(self.context.handlers.keys())}, max_workers={self.config.max_workers}")
 
         tasks: list[asyncio.Task] = []
 
@@ -425,31 +424,31 @@ class RedisMessageQueue:
         if not self.context or self.context.shutting_down:
             return
 
-        self.logger_service.logger.info("开始优雅停机...")
+        self._logger.info("开始优雅停机...")
         self.context.shutting_down = True
 
         try:
             # 1. 停止接收新消息
-            self.logger_service.logger.info("停止消息分发...")
+            self._logger.info("【stop】停止消息分发...")
 
             # 2. 等待本地队列消息处理完成
-            self.logger_service.logger.info("等待本地队列消息处理完成...")
+            self._logger.info("【stop】等待本地队列消息处理完成...")
             await self._wait_for_local_queue_empty()
 
             # 3. 等待所有消费协程完成当前任务
-            self.logger_service.logger.info("等待活跃消费者完成...")
+            self._logger.info("【stop】等待活跃消费者完成...")
             await self._wait_for_consumers_finish()
 
             # 4. 取消所有后台任务
-            self.logger_service.logger.info("取消后台任务...")
+            self._logger.info("【stop】取消后台任务...")
             await self._cleanup_tasks()
 
             # 5. 设置关闭事件
             self.context.shutdown_event.set()
-            self.logger_service.logger.info("优雅停机完成")
+            self._logger.info("【stop】优雅停机完成")
 
         except Exception as e:
-            self.log_error("优雅停机过程中出错", e)
+            self.log_error("【stop】优雅停机过程中出错", e)
 
     async def _wait_for_local_queue_empty(self) -> None:
         """等待本地队列清空"""
@@ -458,20 +457,15 @@ class RedisMessageQueue:
 
         while not self.task_queue.empty():
             if time.time() - start_time > timeout:
-                self.logger_service.logger.warning(
-                    "等待本地队列清空超时，剩余消息数量",
-                    remaining_count=self.task_queue.qsize(),
-                )
+                self._logger.warning(f"【stop】等待本地队列清空超时，剩余消息数量, remaining_count={self.task_queue.qsize()}")
                 break
             await asyncio.sleep(0.1)
 
         if self.task_queue.empty():
-            self.logger_service.logger.info("本地队列已清空")
+            self._logger.info("【stop】本地队列已清空")
         else:
             remaining = self.task_queue.qsize()
-            self.logger_service.logger.warning(
-                "本地队列仍有消息", remaining_count=remaining
-            )
+            self._logger.warning(f"【stop】本地队列仍有消息, remaining_count={remaining}")
 
     async def _wait_for_consumers_finish(self) -> None:
         """等待消费者完成"""
@@ -490,21 +484,19 @@ class RedisMessageQueue:
                 processing_count += count
 
             if processing_count == 0:
-                self.logger_service.logger.info("所有消息处理完成")
+                self._logger.info("【stop】所有消息处理完成")
                 break
 
             await asyncio.sleep(1)
         else:
-            self.logger_service.logger.warning("等待消费者完成超时")
+            self._logger.warning("【stop】等待消费者完成超时")
 
     async def _cleanup_tasks(self) -> None:
         """清理活跃任务"""
         if not self.context or not self.context.active_tasks:
             return
 
-        self.logger_service.logger.info(
-            "取消活跃任务", count=len(self.context.active_tasks)
-        )
+        self._logger.info(f"【stop】取消活跃任务, count={len(self.context.active_tasks)}")
 
         # 取消所有任务
         for task in self.context.active_tasks:
@@ -516,4 +508,4 @@ class RedisMessageQueue:
             await asyncio.gather(*self.context.active_tasks, return_exceptions=True)
 
         self.context.active_tasks.clear()
-        self.logger_service.logger.info("活跃任务清理完成")
+        self._logger.info("【stop】活跃任务清理完成")

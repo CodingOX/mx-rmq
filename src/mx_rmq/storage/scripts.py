@@ -9,22 +9,22 @@ from pathlib import Path
 import redis.asyncio as aioredis
 from redis.commands.core import AsyncScript
 
-from ..logging import LoggerService
+import logging
 
 
 class LuaScriptManager:
     """Lua脚本管理器"""
 
-    def __init__(self, redis: aioredis.Redis, logger_service: LoggerService) -> None:
+    def __init__(self, redis: aioredis.Redis, logger: logging.Logger) -> None:
         """
         初始化脚本管理器
 
         Args:
             redis: Redis连接实例
-            logger_service: 日志服务实例
+            logger: 日志器实例
         """
         self.redis = redis
-        self.logger_service = logger_service
+        self.logger = logger
 
     async def load_scripts(self) -> dict[str, AsyncScript]:
         """
@@ -37,10 +37,12 @@ class LuaScriptManager:
             "produce_normal": "producer/produce_normal_message.lua",
             "produce_delay": "producer/produce_delay_message.lua",
             "process_delay": "consumer/process_delay_message.lua",
+            "get_next_delay_task": "consumer/get_next_delay_task.lua",  # 新增：获取下一个延时任务
             "complete_message": "lifecycle/complete_message.lua",
             "handle_timeout": "management/handle_timeout_message.lua",
             "retry_message": "lifecycle/retry_message.lua",
             "move_to_dlq": "management/move_to_dlq.lua",
+            "handle_parse_error": "management/handle_parse_error.lua",  # 新增：处理解析错误
         }
 
         lua_scripts = {}
@@ -49,7 +51,7 @@ class LuaScriptManager:
             # 注册脚本到Redis
             lua_scripts[script_name] = self.redis.register_script(script_content)
 
-        self.logger_service.logger.info("Lua脚本加载完成", count=len(lua_scripts))
+        self.logger.info(f"Lua脚本加载完成, count={len(lua_scripts)}")
         return lua_scripts
 
     async def _load_script_content(self, filename: str) -> str:
@@ -105,10 +107,8 @@ class LuaScriptManager:
                 script_path = script_dir / filename
 
                 if script_path.exists():
-                    self.logger_service.logger.warning(
-                        "使用开发环境回退路径加载Lua脚本",
-                        script=filename,
-                        path=str(script_path),
+                    self.logger.warning(
+                        f"使用开发环境回退路径加载Lua脚本, script={filename}, path={str(script_path)}"
                     )
                     with open(script_path, encoding="utf-8") as f:
                         return f.read()

@@ -107,9 +107,7 @@ class MessageLifecycleService:
                 self.context.get_global_key(GlobalKeys.PAYLOAD_MAP), msg_id
             )  # type: ignore
             if not payload_json:
-                self.context.logger.warning(
-                    "卡死消息不存在，从processing队列移除", message_id=msg_id
-                )
+                self.context._logger.warning(f"卡死消息不存在，从processing队列移除, message_id={msg_id}")
                 await self.context.redis.lrem(processing_key, 1, msg_id)  # type: ignore
                 return
 
@@ -126,9 +124,7 @@ class MessageLifecycleService:
             # 第三层验证：检查消息是否在processing队列中
             removed_count = await self.context.redis.lrem(processing_key, 1, msg_id)  # type: ignore
             if removed_count == 0:
-                self.context.logger.warning(
-                    "卡死消息不在processing队列中", message_id=msg_id
-                )
+                self.context._logger.warning(f"卡死消息不在processing队列中, message_id={msg_id}")
                 return
 
             # 核心业务逻辑：处理卡死消息
@@ -173,9 +169,7 @@ class MessageLifecycleService:
         self.context.log_error("处理卡死消息失败", error, message_id=msg_id)
         try:
             await self.context.redis.lrem(processing_key, 1, msg_id)  # type: ignore
-            self.context.logger.info(
-                "已从processing队列移除问题消息", message_id=msg_id
-            )
+            self.context._logger.info(f"已从processing队列移除问题消息, message_id={msg_id}")
         except Exception as cleanup_error:
             self.context.log_error("清理卡死消息失败", cleanup_error, message_id=msg_id)
 
@@ -199,7 +193,7 @@ class MessageLifecycleService:
                 ],
                 args=[
                     message.id,
-                    message.model_dump_json(),
+                    message.model_dump_json(by_alias=True, exclude_none=True),
                     retry_delay,
                     current_time,
                 ],
@@ -220,7 +214,7 @@ class MessageLifecycleService:
                     self.context.get_global_key(GlobalKeys.EXPIRE_MONITOR),
                     self.context.get_global_key(GlobalKeys.PAYLOAD_MAP),
                 ],
-                args=[message.id, message.model_dump_json()],
+                args=[message.id, message.model_dump_json(by_alias=True, exclude_none=True)],
             )
         except Exception as e:
             self.context.log_error("移入死信队列失败", e, message_id=message.id)

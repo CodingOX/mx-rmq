@@ -49,8 +49,10 @@ class MQConfig(BaseModel):
         description="重试延迟间隔（秒）",
     )
 
-    # 死信队列配置
-    enable_dead_letter: bool = Field(default=True, description="是否启用死信队列")
+    # 延时任务配置
+    delay_fallback_interval: int = Field(
+        default=30, ge=10, le=300, description="延时任务兜底检查间隔（秒）"
+    )
 
     # 监控配置
     monitor_interval: int = Field(default=30, ge=5, description="监控检查间隔（秒）")

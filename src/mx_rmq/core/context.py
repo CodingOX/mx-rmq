@@ -11,7 +11,7 @@ from redis.commands.core import AsyncScript
 
 from ..config import MQConfig
 from ..constants import GlobalKeys, TopicKeys
-from ..logging import LoggerService
+import logging
 
 
 class QueueContext:
@@ -21,7 +21,7 @@ class QueueContext:
         self,
         config: MQConfig,
         redis: aioredis.Redis,
-        logger_service: LoggerService,
+        logger: logging.Logger,
         lua_scripts: dict[str, AsyncScript],
     ) -> None:
         """
@@ -30,12 +30,12 @@ class QueueContext:
         Args:
             config: 消息队列配置
             redis: Redis 连接
-            logger_service: 日志服务
+            logger: 日志器
             lua_scripts: Lua 脚本字典
         """
         self.config = config
         self.redis = redis
-        self.logger_service = logger_service
+        self._logger = logger
         self.lua_scripts = lua_scripts
 
         # 消息处理器
@@ -57,7 +57,7 @@ class QueueContext:
     @property
     def logger(self):
         """获取logger，保持向后兼容"""
-        return self.logger_service.logger
+        return self._logger
 
     def is_running(self) -> bool:
         """检查是否正在运行"""
@@ -75,19 +75,21 @@ class QueueContext:
             raise ValueError("处理器必须是可调用对象")
 
         self.handlers[topic] = handler
-        self.logger_service.logger.info(
-            "消息处理器注册成功", topic=topic, handler=handler.__name__
+        self._logger.info(
+            f"消息处理器注册成功, topic={topic}, handler={handler.__name__}"
         )
 
     def log_error(self, message: str, error: Exception, **kwargs) -> None:
         """记录错误日志"""
-        self.logger_service.log_error(message, error, **kwargs)
+        extra_info = f", {', '.join(f'{k}={v}' for k, v in kwargs.items())}" if kwargs else ""
+        self._logger.error(f"{message}{extra_info}", exc_info=error)
 
     def log_message_event(
         self, event: str, message_id: str, topic: str, **kwargs
     ) -> None:
         """记录消息事件"""
-        self.logger_service.log_message_event(event, message_id, topic, **kwargs)
+        extra_info = f", {', '.join(f'{k}={v}' for k, v in kwargs.items())}" if kwargs else ""
+        self._logger.info(f"{event} - message_id={message_id}, topic={topic}{extra_info}")
 
     def get_global_key(self, key: GlobalKeys) -> str:
         """
@@ -120,4 +122,5 @@ class QueueContext:
 
     def log_metric(self, metric_name: str, value: Any, **kwargs) -> None:
         """记录指标"""
-        self.logger_service.log_metric(metric_name, value, **kwargs)
+        extra_info = f", {', '.join(f'{k}={v}' for k, v in kwargs.items())}" if kwargs else ""
+        self._logger.debug(f"metric: {metric_name}={value}{extra_info}")

@@ -1,6 +1,6 @@
 [project]
 name = "mx-rmq"
-version = "1.0.2"
+version = "1.1.0"
 description = "基于Redis的异步消息队列系统"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -173,6 +173,7 @@ index-url = "https://mirrors.tencent.com/pypi/simple"
 [dependency-groups]
 dev = [
     "build>=1.2.2.post1",
+    "loguru>=0.7.3",
     "ruff>=0.12.2",
     "twine>=6.1.0",
 ]

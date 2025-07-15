@@ -12,18 +12,7 @@ from .core import (
     ScheduleService,
     QueueContext,
 )
-from .logging import (
-    LoggerService,
-    setup_logging,
-    get_logger_instance,
-    LoggerFactory,
-    get_logger,
-    auto_configure_logging,
-    get_available_backends,
-    setup_loguru_integration,
-    setup_structlog_integration,
-    setup_standard_logging,
-)
+from .logging import LoggerService, setup_colored_logging, setup_simple_colored_logging
 from .message import Message, MessageMeta, MessagePriority, MessageStatus
 from .monitoring import MetricsCollector, QueueMetrics, ProcessingMetrics
 from .queue import RedisMessageQueue
@@ -42,18 +31,11 @@ __all__ = [
     "GlobalKeys",
     "TopicKeys",
     "KeyNamespace",
-    # 日志相关
+    # 向后兼容的日志服务
     "LoggerService",
-    "LoggerFactory",
-    "get_logger",
-    "setup_logging",
-    "get_logger_instance",
-    # 日志集成函数
-    "auto_configure_logging",
-    "get_available_backends",
-    "setup_loguru_integration",
-    "setup_structlog_integration",
-    "setup_standard_logging",
+    # 彩色日志配置
+    "setup_colored_logging",
+    "setup_simple_colored_logging",
     # 监控相关
     "MetricsCollector",
     "QueueMetrics",

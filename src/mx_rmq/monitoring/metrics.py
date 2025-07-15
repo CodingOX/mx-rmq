@@ -11,7 +11,7 @@ import redis.asyncio as aioredis
 from pydantic import BaseModel, Field
 
 from ..constants import GlobalKeys, TopicKeys
-from ..logging import LoggerService
+import logging
 
 
 class QueueMetrics(BaseModel):
@@ -53,7 +53,7 @@ class MetricsCollector:
         self.redis = redis
         self.queue_prefix = queue_prefix
         self._lock = Lock()
-        self.logger_service = LoggerService("metric-collector")
+        self._logger = logging.getLogger(__name__)
 
         # 队列计数器
         self._queue_counters: defaultdict[str, dict[str, int]] = defaultdict(
@@ -349,7 +349,7 @@ class MetricsCollector:
             metrics["dlq_payload_map.count"] = dlq_payload_count
 
         except Exception as e:
-            self.logger_service.log_error("收集队列指标失败", e)
+            self._logger.error("收集队列指标失败", e)
 
         return metrics
 
@@ -410,7 +410,7 @@ class MetricsCollector:
                     metrics[f"processing.{topic}.stuck_count"] = 0
 
         except Exception as e:
-            self.logger_service.log_error("收集处理指标失败", e)
+            self._logger.error("收集处理指标失败", e)
 
         return metrics
 
@@ -471,7 +471,7 @@ class MetricsCollector:
                 metrics["delay.min_remaining"] = 0
 
         except Exception as e:
-            self.logger_service.log_error("收集延时指标失败", e)
+            self._logger.error("收集延时指标失败", e)
 
         return metrics
 
@@ -511,7 +511,7 @@ class MetricsCollector:
             metrics["error.total_dlq"] = len(dlq_messages)
 
         except Exception as e:
-            self.logger_service.log_error("收集错误指标失败", e)
+            self._logger.error("收集错误指标失败", e)
 
         return metrics
 
@@ -566,7 +566,7 @@ class MetricsCollector:
                 metrics["throughput.messages_per_minute"] = 0
 
         except Exception as e:
-            self.logger_service.log_error("收集吞吐率指标失败", e)
+            self._logger.error("收集吞吐率指标失败", e)
 
         return metrics
 
@@ -606,7 +606,7 @@ class MetricsCollector:
             return all_metrics
 
         except Exception as e:
-            self.logger_service.log_error("收集所有指标失败", e)
+            self._logger.error("收集所有指标失败", e)
             return {"timestamp": int(time.time() * 1000)}
 
     def _save_to_history(self, metrics: dict[str, Any]) -> None:
@@ -624,7 +624,7 @@ class MetricsCollector:
                 self.metrics_history.pop(0)
 
         except Exception as e:
-            self.logger_service.log_error("保存指标历史失败", e)
+            self._logger.error("保存指标历史失败", e)
 
     def get_metrics_history(self, last_n: int = 100) -> list[dict[str, Any]]:
         """
@@ -641,4 +641,4 @@ class MetricsCollector:
     def clear_history(self) -> None:
         """清空历史记录"""
         self.metrics_history.clear()
-        self.logger_service.logger.info("指标历史记录已清空")
+        self._logger.info("指标历史记录已清空")
