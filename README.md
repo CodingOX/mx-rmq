@@ -103,7 +103,6 @@ pip install git+https://github.com/CodingOX/mx-rmq.git
 
 - Python 3.12+
 - Redis 5.0+
-- 推荐：Redis 6.0+ (更好的性能)
 
 ## 基本使用
 

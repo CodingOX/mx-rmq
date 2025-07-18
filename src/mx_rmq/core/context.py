@@ -82,14 +82,12 @@ class QueueContext:
     def log_error(self, message: str, error: Exception, **kwargs) -> None:
         """记录错误日志"""
         extra_info = f", {', '.join(f'{k}={v}' for k, v in kwargs.items())}" if kwargs else ""
-        self._logger.error(f"{message}{extra_info}", exc_info=error)
+        self._logger.error(f"{message} {extra_info}", exc_info=error)
 
-    def log_message_event(
-        self, event: str, message_id: str, topic: str, **kwargs
-    ) -> None:
+    def log_info(self, message: str, **kwargs) -> None:
         """记录消息事件"""
         extra_info = f", {', '.join(f'{k}={v}' for k, v in kwargs.items())}" if kwargs else ""
-        self._logger.info(f"{event} - message_id={message_id}, topic={topic}{extra_info}")
+        self._logger.info(f"{message} {extra_info}")
 
     def get_global_key(self, key: GlobalKeys) -> str:
         """

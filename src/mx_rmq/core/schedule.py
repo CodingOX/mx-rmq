@@ -272,7 +272,7 @@ class ScheduleService:
             if results:
                 self.context._logger.info(f"处理延时消息, count={len(results)}")
                 for task_id, queue_name in results:
-                    self.context.log_message_event("延时消息已就绪", task_id, queue_name)
+                    self.context.log_info("延时消息已就绪", task_id=task_id, queue_name=queue_name)
             else:
                 self.context._logger.info("尝试处理延时任务，但没有获取到任务")
 
@@ -304,8 +304,8 @@ class ScheduleService:
                             message, queue_name
                         )
 
-                        self.context.log_message_event(
-                            "过期消息处理", msg_id, queue_name, expire_reason="timeout"
+                        self.context.log_info(
+                            "过期消息处理", message_id=msg_id, queue_name=queue_name, expire_reason="timeout"
                         )
                     except Exception as e:
                         self.context.log_error("处理过期消息失败", e, message_id=msg_id)

@@ -21,6 +21,7 @@ from .core import (
     QueueContext,
     ScheduleService,
 )
+from .storage import RedisConnectionManager
 import logging
 from .message import Message, MessagePriority
 
@@ -37,12 +38,11 @@ class RedisMessageQueue:
         """
         self.config = config or MQConfig()
 
-        # Redis连接
-        self.redis_pool: aioredis.ConnectionPool | None = None
-        self.redis: aioredis.Redis | None = None
-
         # 日志器
         self._logger = logging.getLogger(__name__)
+
+        # Redis连接管理器
+        self.connection_manager = RedisConnectionManager(self.config, self._logger)
 
         # 核心上下文（延迟初始化）
         self.context: QueueContext | None = None
@@ -61,24 +61,13 @@ class RedisMessageQueue:
         # 状态管理
         self.initialized = False
 
-    # 便捷属性，保持向后兼容
-    @property
-    def logger(self):
-        """获取logger，保持向后兼容"""
-        return self._logger
-
     def log_error(self, message: str, error: Exception, **kwargs) -> None:
         """记录错误日志"""
-        extra_info = f", {', '.join(f'{k}={v}' for k, v in kwargs.items())}" if kwargs else ""
-        self._logger.error(f"{message}{extra_info}", exc_info=error)
+        self._logger.error(f"{message}: {error}", exc_info=error, extra=kwargs)
 
-    def log_message_event(
-        self, event: str, message_id: str, topic: str, **kwargs
-    ) -> None:
-        """记录消息事件"""
-        extra_info = f", {', '.join(f'{k}={v}' for k, v in kwargs.items())}" if kwargs else ""
-        self._logger.info(f"{event} - message_id={message_id}, topic={topic}{extra_info}")
-
+    def log_message_event(self, event: str, message_id: str, topic: str, **kwargs) -> None:
+        """记录消息事件日志"""
+        self._logger.info(f"{event} - message_id={message_id}, topic={topic}", extra=kwargs)
     async def initialize(self) -> None:
         """初始化连接和服务组件"""
         # 卫语句：已初始化则直接返回
@@ -87,14 +76,12 @@ class RedisMessageQueue:
 
         try:
             # 步骤1：建立Redis连接
-            await self._initialize_redis_connection()
+            redis = await self.connection_manager.initialize_connection()
 
             # 步骤2：加载Lua脚本
             from .storage import LuaScriptManager
 
-            # 确保redis已初始化
-            assert self.redis is not None, "Redis连接未初始化"
-            script_manager = LuaScriptManager(self.redis, self._logger)
+            script_manager = LuaScriptManager(redis, self._logger)
             lua_scripts = await script_manager.load_scripts()
 
             # 步骤3：创建核心上下文和服务组件
@@ -107,37 +94,15 @@ class RedisMessageQueue:
             self.log_error("消息队列初始化失败", e)
             raise
 
-    async def _initialize_redis_connection(self) -> None:
-        """初始化Redis连接"""
-        # 创建Redis连接池
-        self.redis_pool = aioredis.ConnectionPool.from_url(
-            self.config.redis_url,
-            password=self.config.redis_password,
-            max_connections=self.config.connection_pool_size,
-            db=self.config.redis_db,
-            decode_responses=True,
-            socket_keepalive=True,
-            socket_keepalive_options={},
-            health_check_interval=30,
-        )
-
-        self.redis = aioredis.Redis(connection_pool=self.redis_pool)
-
-        # 测试连接
-        await self.redis.ping()
-        self._logger.info(
-            f"Redis连接建立成功, redis_url={self.config.redis_url}"
-        )
-
     async def _initialize_services(self, lua_scripts: dict[str, AsyncScript]) -> None:
         """初始化服务组件"""
         # 确保Redis连接已建立
-        assert self.redis is not None, "Redis连接未初始化"
+        assert self.connection_manager.redis is not None, "Redis连接未初始化"
 
         # 创建核心上下文
         self.context = QueueContext(
             config=self.config,
-            redis=self.redis,
+            redis=self.connection_manager.redis,
             logger=self._logger,
             lua_scripts=lua_scripts,
         )
@@ -161,9 +126,7 @@ class RedisMessageQueue:
     async def cleanup(self) -> None:
         """清理资源"""
         try:
-            if self.redis_pool:
-                await self.redis_pool.disconnect()
-                self._logger.info("Redis连接池已关闭")
+            await self.connection_manager.cleanup()
         except Exception as e:
             self.log_error("清理资源时出错", e)
 

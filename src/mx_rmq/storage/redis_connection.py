@@ -12,16 +12,16 @@ import logging
 class RedisConnectionManager:
     """Redis连接管理器"""
 
-    def __init__(self, config: MQConfig, logger: logging.Logger) -> None:
+    def __init__(self, config: MQConfig, logger: logging.Logger | None = None) -> None:
         """
         初始化连接管理器
 
         Args:
             config: 消息队列配置
-            logger: 日志器实例
+            logger: 日志器实例，如果为None则创建默认logger
         """
         self.config = config
-        self._logger = logger
+        self._logger = logger or logging.getLogger("mx_rmq.storage.connection")
         self.redis_pool: aioredis.ConnectionPool | None = None
         self.redis: aioredis.Redis | None = None
 
@@ -60,3 +60,8 @@ class RedisConnectionManager:
                 self._logger.info("Redis连接池已关闭")
         except Exception as e:
             self._logger.error("清理Redis连接时出错", exc_info=e)
+
+    @property
+    def is_connected(self) -> bool:
+        """检查是否已连接"""
+        return self.redis is not None and self.redis_pool is not None

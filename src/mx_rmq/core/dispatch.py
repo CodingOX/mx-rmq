@@ -55,9 +55,7 @@ class DispatchService:
 
                 # 卫语句：消息内容不存在则继续下次循环
                 if not payload_json:
-                    self.context.log_message_event(
-                        "消息体不存在，消息 id:{}", message_id, topic
-                    )
+                    self.context.log_info(  "消息体不存在", message_id=message_id, topic=topic)
                     continue
 
                 try:
@@ -90,8 +88,9 @@ class DispatchService:
                             ],
                         )
                         
-                        self.context.log_message_event(
-                            "消息解析错误已转入错误存储", message_id, topic,
+                        self.context.log_info(
+                            "消息解析错误已转入错误存储", 
+                            message_id=message_id, topic=topic,
                             error_type="parse_error", error_message=error_message
                         )
                     except Exception as lua_error:
@@ -123,11 +122,11 @@ class DispatchService:
                 # 插入本地 queue
                 await self.task_queue.put(TaskItem(topic, message))
 
-                self.context.log_message_event("消息分发成功", message_id, topic)
+                self.context.log_info(f"消息分发成功: message_id={message_id}, topic={topic}")
 
             except Exception as e:
                 if not self.context.shutting_down:
-                    self.context.log_error("消息分发错误", e, topic=topic)
+                    self.context.log_error(f"消息分发错误: topic={topic}", e)
                 await asyncio.sleep(1)
 
         self.context._logger.info(f"消息分发协程已停止, topic={topic}")

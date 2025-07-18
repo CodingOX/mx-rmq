@@ -51,10 +51,10 @@ class MessageLifecycleService:
     ) -> None:
         """处理可重试的失败消息"""
         await self.retry_message(message, message.topic)
-        self.context.log_message_event(
+        self.context.log_info(
             "消息重试调度",
-            message.id,
-            message.topic,
+            message_id=message.id,
+            topic=message.topic,
             retry_count=message.meta.retry_count,
             max_retries=message.meta.max_retries,
             error=str(error),
@@ -63,10 +63,10 @@ class MessageLifecycleService:
     async def _handle_final_failure(self, message: Message, error: Exception) -> None:
         """处理最终失败的消息"""
         await self.move_to_dead_letter_queue(message)
-        self.context.log_message_event(
+        self.context.log_info(
             "消息移入死信队列",
-            message.id,
-            message.topic,
+            message_id=message.id,
+            topic=message.topic,
             retry_count=message.meta.retry_count,
             error=str(error),
         )
@@ -85,17 +85,17 @@ class MessageLifecycleService:
     async def _handle_expired_retry(self, message: Message, queue_name: str) -> None:
         """处理可重试的过期消息"""
         await self.retry_message(message, queue_name)
-        self.context.log_message_event(
+        self.context.log_info(
             "过期消息重试",
-            message.id,
-            queue_name,
+            message_id=message.id,
+            queue_name=queue_name,
             retry_count=message.meta.retry_count,
         )
 
     async def _handle_expired_final(self, message: Message, queue_name: str) -> None:
         """处理最终过期的消息"""
         await self.move_to_dead_letter_queue(message)
-        self.context.log_message_event("过期消息移入死信队列", message.id, queue_name)
+        self.context.log_info("过期消息移入死信队列", message_id=message.id, queue_name=queue_name)
 
     async def handle_stuck_message(
         self, msg_id: str, topic: str, processing_key: str
@@ -144,17 +144,17 @@ class MessageLifecycleService:
         # 根据重试能力选择处理方式
         if message.can_retry():
             await self.retry_message(message, topic)
-            self.context.log_message_event(
+            self.context.log_info(
                 "卡死消息重新调度",
-                msg_id,
-                topic,
+                message_id=msg_id,
+                topic=topic,
                 retry_count=message.meta.retry_count,
                 reason="stuck_timeout",
             )
         else:
             await self.move_to_dead_letter_queue(message)
-            self.context.log_message_event(
-                "卡死消息移入死信队列", msg_id, topic, reason="stuck_timeout"
+            self.context.log_info(
+                "卡死消息移入死信队列", message_id=msg_id, topic=topic, reason="stuck_timeout"
             )
 
         # 从过期监控中移除
