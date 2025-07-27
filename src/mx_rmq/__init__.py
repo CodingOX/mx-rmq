@@ -5,13 +5,7 @@ MX-RMQ: 基于Redis的高性能异步消息队列
 
 from .config import MQConfig
 from .constants import GlobalKeys, TopicKeys, KeyNamespace
-from .core import (
-    ConsumerService,
-    DispatchService,
-    MessageLifecycleService,
-    ScheduleService,
-    QueueContext,
-)
+from .core import QueueContext
 from .logging import LoggerService, setup_colored_logging, setup_simple_colored_logging
 from .message import Message, MessageMeta, MessagePriority, MessageStatus
 from .monitoring import MetricsCollector, QueueMetrics, ProcessingMetrics
@@ -40,10 +34,6 @@ __all__ = [
     "MetricsCollector",
     "QueueMetrics",
     "ProcessingMetrics",
-    # 内部组件（高级用法）
+    # 内部组件（高级用法，仅用于扩展开发）
     "QueueContext",
-    "ConsumerService",
-    "MessageLifecycleService",
-    "ScheduleService",
-    "DispatchService",
 ]

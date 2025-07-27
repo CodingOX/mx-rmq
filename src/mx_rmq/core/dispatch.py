@@ -46,7 +46,7 @@ class DispatchService:
                     self.context._logger.debug(f"BLMOVE超时，无消息, topic={topic}")
                     continue
                 
-                self.context._logger.info(f"成功获取消息, topic={topic}, message_id={message_id}")
+                self.context._logger.debug(f"成功获取消息, topic={topic}, message_id={message_id}")
 
                 # 获取消息内容
                 payload_json = await self.context.redis.hget(
@@ -122,7 +122,7 @@ class DispatchService:
                 # 插入本地 queue
                 await self.task_queue.put(TaskItem(topic, message))
 
-                self.context.log_info(f"消息分发成功: message_id={message_id}, topic={topic}")
+                # self.context.log_info(f"消息分发成功: message_id={message_id}, topic={topic}")
 
             except Exception as e:
                 if not self.context.shutting_down:

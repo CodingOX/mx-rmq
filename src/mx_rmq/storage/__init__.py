@@ -1,10 +1,10 @@
 """
-存储子系统
-提供Redis连接管理和Lua脚本管理功能
+存储层模块
+包含Redis连接管理和Lua脚本管理
 """
 
-from .redis_connection import RedisConnectionManager
-from .scripts import LuaScriptManager
+from .connection_manager import RedisConnectionManager
+from .lua_manager import LuaScriptManager
 
 __all__ = [
     "RedisConnectionManager",

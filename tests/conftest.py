@@ -22,7 +22,7 @@ def event_loop():
 def test_config():
     """测试用配置"""
     return MQConfig(
-        redis_url="redis://localhost:6379",
+        redis_host="redis://localhost:6379",
         redis_db=15,  # 使用测试数据库
         max_workers=2,
         task_queue_size=5,

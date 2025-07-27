@@ -8,6 +8,7 @@ import time
 import uuid
 from collections.abc import Callable
 from typing import Any
+from dataclasses import dataclass, field
 
 import redis.asyncio as aioredis
 from redis.commands.core import AsyncScript
@@ -26,6 +27,16 @@ import logging
 from .message import Message, MessagePriority
 
 
+@dataclass
+class QueueMetrics:
+    """队列指标信息"""
+    local_queue_size: int
+    local_queue_maxsize: int
+    active_tasks_count: int = 0
+    registered_topics: list[str] = field(default_factory=list)
+    shutting_down: bool = False
+
+
 class RedisMessageQueue:
     """Redis消息队列核心类 - 完全组合模式"""
 
@@ -41,25 +52,27 @@ class RedisMessageQueue:
         # 日志器
         self._logger = logging.getLogger(__name__)
 
-        # Redis连接管理器
-        self.connection_manager = RedisConnectionManager(self.config, self._logger)
+        # Redis连接管理器（私有）
+        self._connection_manager = RedisConnectionManager(self.config, self._logger)
 
-        # 核心上下文（延迟初始化）
-        self.context: QueueContext | None = None
+        # 核心上下文（延迟初始化，私有）
+        self._context: QueueContext | None = None
 
-        # 本地任务队列
-        self.task_queue: asyncio.Queue = asyncio.Queue(
+        # 本地任务队列（私有）
+        self._task_queue: asyncio.Queue = asyncio.Queue(
             maxsize=self.config.task_queue_size
         )
 
-        # 服务组件（延迟初始化）
-        self.consumer_service: ConsumerService | None = None
-        self.message_handler_service: MessageLifecycleService | None = None
-        self.monitor_service: ScheduleService | None = None
-        self.dispatch_service: DispatchService | None = None
+        # 服务组件（延迟初始化，私有）
+        self._consumer_service: ConsumerService | None = None
+        self._message_handler_service: MessageLifecycleService | None = None
+        self._monitor_service: ScheduleService | None = None
+        self._dispatch_service: DispatchService | None = None
 
         # 状态管理
         self.initialized = False
+        self._background_task: asyncio.Task | None = None
+        self._start_time: float | None = None
 
     def log_error(self, message: str, error: Exception, **kwargs) -> None:
         """记录错误日志"""
@@ -68,6 +81,8 @@ class RedisMessageQueue:
     def log_message_event(self, event: str, message_id: str, topic: str, **kwargs) -> None:
         """记录消息事件日志"""
         self._logger.info(f"{event} - message_id={message_id}, topic={topic}", extra=kwargs)
+
+
     async def initialize(self) -> None:
         """初始化连接和服务组件"""
         # 卫语句：已初始化则直接返回
@@ -76,7 +91,7 @@ class RedisMessageQueue:
 
         try:
             # 步骤1：建立Redis连接
-            redis = await self.connection_manager.initialize_connection()
+            redis = await self._connection_manager.initialize_connection()
 
             # 步骤2：加载Lua脚本
             from .storage import LuaScriptManager
@@ -97,21 +112,21 @@ class RedisMessageQueue:
     async def _initialize_services(self, lua_scripts: dict[str, AsyncScript]) -> None:
         """初始化服务组件"""
         # 确保Redis连接已建立
-        assert self.connection_manager.redis is not None, "Redis连接未初始化"
+        assert self._connection_manager.redis is not None, "Redis连接未初始化"
 
         # 创建核心上下文
-        self.context = QueueContext(
+        self._context = QueueContext(
             config=self.config,
-            redis=self.connection_manager.redis,
+            redis=self._connection_manager.redis,
             logger=self._logger,
             lua_scripts=lua_scripts,
         )
 
         # 初始化服务组件
-        self.consumer_service = ConsumerService(self.context, self.task_queue)
-        self.message_handler_service = MessageLifecycleService(self.context)
-        self.monitor_service = ScheduleService(self.context)
-        self.dispatch_service = DispatchService(self.context, self.task_queue)
+        self._consumer_service = ConsumerService(self._context, self._task_queue)
+        self._message_handler_service = MessageLifecycleService(self._context)
+        self._monitor_service = ScheduleService(self._context)
+        self._dispatch_service = DispatchService(self._context, self._task_queue)
 
     def _setup_signal_handlers(self) -> None:
         """设置信号处理器"""
@@ -126,7 +141,7 @@ class RedisMessageQueue:
     async def cleanup(self) -> None:
         """清理资源"""
         try:
-            await self.connection_manager.cleanup()
+            await self._connection_manager.cleanup()
         except Exception as e:
             self.log_error("清理资源时出错", e)
 
@@ -158,7 +173,7 @@ class RedisMessageQueue:
         if not self.initialized:
             await self.initialize()
 
-        assert self.context is not None
+        assert self._context is not None
 
         # 创建消息对象
         message = Message(
@@ -238,14 +253,14 @@ class RedisMessageQueue:
         priority: MessagePriority,
     ) -> None:
         """生产普通消息"""
-        assert self.context is not None
+        assert self._context is not None
         is_urgent = "1" if priority == MessagePriority.HIGH else "0"
 
-        await self.context.lua_scripts["produce_normal"](
+        await self._context.lua_scripts["produce_normal"](
             keys=[
-                self.context.get_global_key(GlobalKeys.PAYLOAD_MAP),
-                self.context.get_topic_key(topic, TopicKeys.PENDING),
-                self.context.get_global_key(GlobalKeys.EXPIRE_MONITOR),
+                self._context.get_global_key(GlobalKeys.PAYLOAD_MAP),
+                self._context.get_topic_key(topic, TopicKeys.PENDING),
+                self._context.get_global_key(GlobalKeys.EXPIRE_MONITOR),
             ],
             args=[message_id, payload_json, topic, expire_time, is_urgent],
         )
@@ -254,25 +269,152 @@ class RedisMessageQueue:
         self, message_id: str, payload_json: str, topic: str, execute_time: int
     ) -> None:
         """生产延时消息"""
-        assert self.context is not None
+        assert self._context is not None
 
         # 使用增强版脚本，包含智能 pubsub 通知
-        await self.context.lua_scripts["produce_delay"](
+        await self._context.lua_scripts["produce_delay"](
             keys=[
-                self.context.get_global_key(GlobalKeys.PAYLOAD_MAP),
-                self.context.get_global_key(GlobalKeys.DELAY_TASKS),
-                self.context.get_global_key(
-                    GlobalKeys.DELAY_PUBSUB_CHANNEL
-                ),  # pubsub 通道
+                self._context.get_global_key(GlobalKeys.PAYLOAD_MAP),
+                self._context.get_global_key(GlobalKeys.DELAY_TASKS),
+                self._context.get_global_key(GlobalKeys.DELAY_PUBSUB_CHANNEL),  # pubsub 通道
             ],
             args=[message_id, payload_json, topic, execute_time],
         )
 
     # ==================== 消费者接口 ====================
 
-    def register(
-        self, topic: str, handler: Callable, timeout: float | None = None
-    ) -> None:
+    async def _prepare_for_consuming(self) -> None:
+        """准备消费环境：初始化检查和处理器注册"""
+        if not self.initialized:
+            await self.initialize()
+
+        assert self._context is not None
+
+        # 注册延迟的处理器
+        if hasattr(self, "_pending_handlers"):
+            for topic, handler in self._pending_handlers.items():
+                self._context.register_handler(topic, handler)
+            delattr(self, "_pending_handlers")
+
+        if not self._context.handlers:
+            self._logger.warning("未注册任何消息处理器，队列将启动但不会处理业务消息")
+
+    def _get_task_definitions(self) -> list[dict[str, Any]]:
+        """获取任务定义列表
+        
+        Returns:
+            list[dict]: 任务定义列表，每个定义包含name、coro、task_name等信息
+        """
+        assert self._context is not None
+        
+        task_definitions = []
+        
+        # 1. 消息分发协程（每个topic一个）
+        for topic in self._context.handlers.keys():
+            task_definitions.append({
+                "name": f"dispatch_{topic}",
+                "coro": self._dispatch_service.dispatch_messages(topic),  # type: ignore
+                "description": f"消息分发协程-{topic}"
+            })
+        
+        # 2. 延时消息处理协程
+        task_definitions.append({
+            "name": "delay_processor",
+            "coro": self._monitor_service.process_delay_messages(),  # type: ignore
+            "description": "延时消息处理协程"
+        })
+        
+        # 3. 过期消息监控协程
+        task_definitions.append({
+            "name": "expired_monitor",
+            "coro": self._monitor_service.monitor_expired_messages(),  # type: ignore
+            "description": "过期消息监控协程"
+        })
+        
+        # 4. Processing队列监控协程
+        task_definitions.append({
+            "name": "processing_monitor",
+            "coro": self._monitor_service.monitor_processing_queues(),  # type: ignore
+            "description": "Processing队列监控协程"
+        })
+        
+        # 5. 消费者协程池
+        for i in range(self.config.max_workers):
+            task_definitions.append({
+                "name": f"consumer_{i}",
+                "coro": self._consumer_service.consume_messages(),  # type: ignore
+                "description": f"消费者协程-{i}"
+            })
+        
+        # 6. 系统监控协程
+        task_definitions.append({
+            "name": "system_monitor",
+            "coro": self._monitor_service.system_monitor(),  # type: ignore
+            "description": "系统监控协程"
+        })
+        
+        return task_definitions
+
+    def _create_task_from_definition(self, task_def: dict[str, Any]) -> asyncio.Task:
+        """根据任务定义创建asyncio.Task
+        
+        Args:
+            task_def: 任务定义字典
+            
+        Returns:
+            asyncio.Task: 创建的任务对象
+        """
+        task = asyncio.create_task(
+            task_def["coro"],
+            name=task_def["name"]
+        )
+        
+        # 将任务添加到活跃任务集合
+        if self._context:
+            self._context.active_tasks.add(task)
+            
+        return task
+
+    async def _create_and_run_tasks(self, is_background: bool = False) -> None:
+        """创建并运行所有任务
+        
+        Args:
+            is_background: 是否为后台模式，影响错误处理和清理逻辑
+        """
+        assert self._context is not None
+        
+        # 记录启动日志
+        mode_text = "后台" if is_background else "前台"
+        self._logger.info(
+            f"{mode_text}启动消息消费, topics={list(self._context.handlers.keys())}, "
+            f"max_workers={self.config.max_workers}"
+        )
+        
+        # 获取任务定义并创建任务
+        task_definitions = self._get_task_definitions()
+        tasks: list[asyncio.Task] = []
+        
+        for task_def in task_definitions:
+            task = self._create_task_from_definition(task_def)
+            tasks.append(task)
+        
+        try:
+            # 等待所有任务完成
+            await asyncio.gather(*tasks, return_exceptions=True)
+            
+        except Exception as e:
+            error_msg = "后台消息消费过程中出错" if is_background else "消息消费过程中出错"
+            self.log_error(error_msg, e)
+            raise
+        finally:
+            # 清理任务
+            await self._cleanup_tasks()
+            
+            # 非后台模式需要额外清理资源
+            if not is_background:
+                await self.cleanup()
+
+    def register(self, topic: str, handler: Callable) -> None:
         """
         注册消息处理器
 
@@ -286,8 +428,8 @@ class RedisMessageQueue:
         """注册处理器装饰器"""
 
         # 如果已经初始化，直接注册到context
-        if self.context:
-            self.context.register_handler(topic, handler)
+        if self._context:
+            self._context.register_handler(topic, handler)
         else:
             # 延迟注册，等待初始化
             if not hasattr(self, "_pending_handlers"):
@@ -298,97 +440,289 @@ class RedisMessageQueue:
 
     async def start_dispatch_consuming(self) -> None:
         """启动消费"""
-        if not self.initialized:
-            await self.initialize()
+        # 准备消费环境
+        await self._prepare_for_consuming()
+        
+        # 创建并运行任务
+        await self._create_and_run_tasks(is_background=False)
 
-        assert self.context is not None
-
-        # 注册延迟的处理器
-        if hasattr(self, "_pending_handlers"):
-            for topic, handler in self._pending_handlers.items():
-                self.context.register_handler(topic, handler)
-            delattr(self, "_pending_handlers")
-
-        if not self.context.handlers:
-            raise ValueError("未注册任何消息处理器")
-
-        self.context.running = True
+    async def start_background(self) -> asyncio.Task:
+        """非阻塞启动消费，返回后台任务
+        
+        Returns:
+            asyncio.Task: 后台运行的任务对象
+            
+        Raises:
+            RuntimeError: 如果已经在运行中
+        """
+        if self.is_running():
+            raise RuntimeError("消息队列已经在运行中")
+            
+        # 准备消费环境
+        await self._prepare_for_consuming()
+            
+        # 创建后台任务
+        self._background_task = asyncio.create_task(
+            self._run_background_services(),
+            name="mx_rmq_background"
+        )
+        self._start_time = time.time()
+        
+        return self._background_task
+        
+    async def _run_background_services(self) -> None:
+        """运行后台服务（内部方法）"""
+        if not self._context:
+            raise RuntimeError("队列未初始化")
+            
+        self._context.running = True
         self._setup_signal_handlers()
-
-        self._logger.warn(f"启动消息消费, topics={list(self.context.handlers.keys())}, max_workers={self.config.max_workers}")
-
-        tasks: list[asyncio.Task] = []
-
+        
+        # 创建并运行任务
+        await self._create_and_run_tasks(is_background=True)
+            
+    async def stop(self) -> None:
+        """停止消息队列
+        
+        优雅地停止所有后台服务并清理资源
+        """
+        if not self.is_running():
+            self._logger.warning("消息队列未在运行中")
+            return
+            
+        self._logger.info("开始停止消息队列...")
+        
         try:
-            # 1. 消息分发协程（每个topic一个）
-            for topic in self.context.handlers.keys():
-                task = asyncio.create_task(
-                    self.dispatch_service.dispatch_messages(topic),  # type: ignore
-                    name=f"dispatch_{topic}",
-                )
-                tasks.append(task)
-                self.context.active_tasks.add(task)
-
-            # 2. 延时消息处理协程
-            task = asyncio.create_task(
-                self.monitor_service.process_delay_messages(),  # type: ignore
-                name="delay_processor",
-            )
-            tasks.append(task)
-            self.context.active_tasks.add(task)
-
-            # 3. 过期消息监控协程
-            task = asyncio.create_task(
-                self.monitor_service.monitor_expired_messages(),  # type: ignore
-                name="expired_monitor",
-            )
-            tasks.append(task)
-            self.context.active_tasks.add(task)
-
-            # 4. Processing队列监控协程
-            task = asyncio.create_task(
-                self.monitor_service.monitor_processing_queues(),  # type: ignore
-                name="processing_monitor",
-            )
-            tasks.append(task)
-            self.context.active_tasks.add(task)
-
-            # 5. 消费者协程池
-            for i in range(self.config.max_workers):
-                task = asyncio.create_task(
-                    self.consumer_service.consume_messages(),  # type: ignore
-                    name=f"consumer_{i}",
-                )
-                tasks.append(task)
-                self.context.active_tasks.add(task)
-
-            # 6. 系统监控协程
-            task = asyncio.create_task(
-                self.monitor_service.system_monitor(),  # type: ignore
-                name="system_monitor",
-            )
-            tasks.append(task)
-            self.context.active_tasks.add(task)
-
-            # 等待所有任务完成
-            await asyncio.gather(*tasks, return_exceptions=True)
-
+            # 执行优雅停机
+            await self._graceful_shutdown()
+            
+            # 等待后台任务完成
+            if self._background_task and not self._background_task.done():
+                self._background_task.cancel()
+                try:
+                    await self._background_task
+                except asyncio.CancelledError:
+                    pass
+                    
         except Exception as e:
-            self.log_error("消息消费过程中出错", e)
-            raise
+            self.log_error("停止消息队列时出错", e)
         finally:
-            await self._cleanup_tasks()
+            self._background_task = None
+            self._start_time = None
             await self.cleanup()
+            
+        self._logger.info("消息队列已停止")
+        
+    def is_running(self) -> bool:
+        """检查消息队列是否正在运行
+        
+        Returns:
+            bool: True表示正在运行，False表示未运行
+        """
+        return (
+            self._background_task is not None 
+            and not self._background_task.done()
+            and self._context is not None 
+            and self._context.running
+        )
+        
+    def get_status(self) -> dict[str, Any]:
+        """获取消息队列状态信息
+        
+        Returns:
+            dict: 包含运行状态、启动时间、活跃任务数等信息
+        """
+        status = {
+            "running": self.is_running(),
+            "initialized": self.initialized,
+            "start_time": self._start_time,
+            "uptime_seconds": time.time() - self._start_time if self._start_time else None,
+        }
+        
+        if self._context:
+            status.update({
+                "registered_topics": list(self._context.handlers.keys()),
+                "active_tasks_count": len(self._context.active_tasks),
+                "shutting_down": self._context.shutting_down,
+                "local_queue_size": self._task_queue.qsize(),
+            })
+            
+        return status
+        
+    async def health_check(self) -> dict[str, Any]:
+        """健康检查
+        
+        Returns:
+            dict: 健康状态信息
+        """
+        health = {
+            "healthy": True,
+            "timestamp": time.time(),
+            "checks": {}
+        }
+        
+        try:
+            # 检查Redis连接
+            if self._context and self._context.redis:
+                await self._context.redis.ping()
+                health["checks"]["redis"] = "ok"
+            else:
+                health["checks"]["redis"] = "not_initialized"
+                health["healthy"] = False
+                
+            # 检查运行状态
+            if self.is_running():
+                health["checks"]["running"] = "ok"
+            else:
+                health["checks"]["running"] = "stopped"
+                
+            # 检查后台任务状态
+            if self._background_task:
+                if self._background_task.done():
+                    if self._background_task.exception():
+                        health["checks"]["background_task"] = f"failed: {self._background_task.exception()}"
+                        health["healthy"] = False
+                    else:
+                        health["checks"]["background_task"] = "completed"
+                else:
+                    health["checks"]["background_task"] = "running"
+            else:
+                health["checks"]["background_task"] = "not_started"
+                
+        except Exception as e:
+            health["healthy"] = False
+            health["error"] = str(e)
+            
+        return health
+
+    # ==================== 受控访问接口 ====================
+    
+    @property
+    def context(self) -> QueueContext | None:
+        """获取队列上下文（只读访问）
+        
+        Returns:
+            QueueContext | None: 队列上下文，未初始化时返回None
+        """
+        return self._context
+    
+    @property
+    def connection_manager(self) -> RedisConnectionManager:
+        """获取Redis连接管理器（只读访问）
+        
+        Returns:
+            RedisConnectionManager: Redis连接管理器
+        """
+        return self._connection_manager
+    
+    def get_queue_metrics(self) -> QueueMetrics:
+        """获取队列指标信息
+        
+        Returns:
+            QueueMetrics: 包含本地队列大小等指标信息
+        """
+        metrics = QueueMetrics(
+            local_queue_size=self._task_queue.qsize(),
+            local_queue_maxsize=self._task_queue.maxsize,
+        )
+        
+        if self._context:
+            metrics.active_tasks_count = len(self._context.active_tasks)
+            metrics.registered_topics = list(self._context.handlers.keys())
+            metrics.shutting_down = self._context.shutting_down
+            
+        return metrics
+    
+    def get_service_status(self) -> dict[str, bool]:
+        """获取服务组件状态
+        
+        Returns:
+            dict: 各服务组件的初始化状态
+        """
+        return {
+            "consumer_service": self._consumer_service is not None,
+            "message_handler_service": self._message_handler_service is not None,
+            "monitor_service": self._monitor_service is not None,
+            "dispatch_service": self._dispatch_service is not None,
+        }
+
+    # ==================== 异步上下文管理器支持 ====================
+    
+    async def __aenter__(self) -> "RedisMessageQueue":
+        """异步上下文管理器入口
+        
+        Returns:
+            RedisMessageQueue: 自身实例
+        """
+        await self.initialize()
+        return self
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """异步上下文管理器退出
+        
+        Args:
+            exc_type: 异常类型
+            exc_val: 异常值
+            exc_tb: 异常追踪
+        """
+        if self.is_running():
+            await self.stop()
+        else:
+             await self.cleanup()
+             
+    # ==================== 同步运行方法 ====================
+    
+    def run(self, duration: float | None = None) -> None:
+        """同步运行消息队列
+        
+        这是一个便利方法，适用于简单的使用场景。
+        它会创建事件循环并运行消息队列，直到手动停止或达到指定时长。
+        
+        Args:
+            duration: 运行时长（秒），None表示无限运行直到收到停止信号
+            
+        Note:
+            此方法会阻塞当前线程。对于更复杂的场景，建议使用异步方法。
+        """
+        import asyncio
+        
+        async def _run_with_duration():
+            """带时长限制的运行"""
+            try:
+                # 启动后台服务
+                task = await self.start_background()
+                
+                if duration is not None:
+                    # 运行指定时长
+                    await asyncio.sleep(duration)
+                    await self.stop()
+                else:
+                    # 无限运行，等待任务完成（通常是收到停止信号）
+                    await task
+                    
+            except KeyboardInterrupt:
+                self._logger.info("收到键盘中断信号，开始停止...")
+                await self.stop()
+            except Exception as e:
+                self.log_error("运行过程中出错", e)
+                await self.stop()
+                raise
+                
+        # 运行事件循环
+        try:
+            asyncio.run(_run_with_duration())
+        except KeyboardInterrupt:
+            self._logger.info("程序已停止")
 
     # ==================== 优雅停机相关方法 ====================
 
     async def _graceful_shutdown(self) -> None:
         """优雅停机"""
-        if not self.context or self.context.shutting_down:
+        if not self._context or self._context.shutting_down:
             return
 
         self._logger.info("开始优雅停机...")
-        self.context.shutting_down = True
+        self._context.shutting_down = True
 
         try:
             # 1. 停止接收新消息
@@ -407,7 +741,7 @@ class RedisMessageQueue:
             await self._cleanup_tasks()
 
             # 5. 设置关闭事件
-            self.context.shutdown_event.set()
+            self._context.shutdown_event.set()
             self._logger.info("【stop】优雅停机完成")
 
         except Exception as e:
@@ -418,21 +752,21 @@ class RedisMessageQueue:
         timeout = 30  # 30秒超时
         start_time = time.time()
 
-        while not self.task_queue.empty():
+        while not self._task_queue.empty():
             if time.time() - start_time > timeout:
-                self._logger.warning(f"【stop】等待本地队列清空超时，剩余消息数量, remaining_count={self.task_queue.qsize()}")
+                self._logger.warning(f"【stop】等待本地队列清空超时，剩余消息数量, remaining_count={self._task_queue.qsize()}")
                 break
             await asyncio.sleep(0.1)
 
-        if self.task_queue.empty():
+        if self._task_queue.empty():
             self._logger.info("【stop】本地队列已清空")
         else:
-            remaining = self.task_queue.qsize()
+            remaining = self._task_queue.qsize()
             self._logger.warning(f"【stop】本地队列仍有消息, remaining_count={remaining}")
 
     async def _wait_for_consumers_finish(self) -> None:
         """等待消费者完成"""
-        if not self.context:
+        if not self._context:
             return
 
         timeout = 30  # 30秒超时
@@ -442,8 +776,8 @@ class RedisMessageQueue:
         while time.time() - start_time < timeout:
             # 检查是否还有正在处理的消息
             processing_count = 0
-            for topic in self.context.handlers.keys():
-                count = await self.context.redis.llen(f"{topic}:processing")  # type: ignore
+            for topic in self._context.handlers.keys():
+                count = await self._context.redis.llen(f"{topic}:processing")  # type: ignore
                 processing_count += count
 
             if processing_count == 0:
@@ -456,19 +790,19 @@ class RedisMessageQueue:
 
     async def _cleanup_tasks(self) -> None:
         """清理活跃任务"""
-        if not self.context or not self.context.active_tasks:
+        if not self._context or not self._context.active_tasks:
             return
 
-        self._logger.info(f"【stop】取消活跃任务, count={len(self.context.active_tasks)}")
+        self._logger.info(f"【stop】取消活跃任务, count={len(self._context.active_tasks)}")
 
         # 取消所有任务
-        for task in self.context.active_tasks:
+        for task in self._context.active_tasks:
             if not task.done():
                 task.cancel()
 
         # 等待所有任务结束
-        if self.context.active_tasks:
-            await asyncio.gather(*self.context.active_tasks, return_exceptions=True)
+        if self._context.active_tasks:
+            await asyncio.gather(*self._context.active_tasks, return_exceptions=True)
 
-        self.context.active_tasks.clear()
+        self._context.active_tasks.clear()
         self._logger.info("【stop】活跃任务清理完成")

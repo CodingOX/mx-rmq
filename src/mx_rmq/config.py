@@ -13,7 +13,7 @@ class MQConfig(BaseModel):
     model_config = {"frozen": True}  # 配置对象不可变
 
     # Redis连接配置
-    redis_url: str = Field(default="redis://localhost:6379", description="Redis连接URL")
+    redis_host: str = Field(default="redis://localhost:6379", description="Redis连接URL")
     redis_db: int = Field(default=0, ge=0, le=15, description="Redis数据库编号")
     redis_password: str | None = Field(default=None, description="Redis密码")
 

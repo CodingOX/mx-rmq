@@ -17,7 +17,6 @@ from mx_rmq import (
     MessagePriority,
     LoggerService,
     QueueContext,
-    ConsumerService,
 )
 
 
@@ -25,7 +24,7 @@ from mx_rmq import (
 async def producer_example():
     """生产者示例"""
     config = MQConfig(
-        redis_url="redis://localhost:6379",
+        redis_host="redis://localhost:6479",
         # redis_password="RedisPassword",
         max_retries=3,
         task_queue_size=10,
@@ -56,6 +55,60 @@ async def producer_example():
         await queue.cleanup()
 
 
+# 示例1b：批量生成 notifications 消息
+async def batch_notifications_producer(n: int = 10):
+    """批量生成 n 条 notifications 消息，延时 5-60 秒随机"""
+    config = MQConfig(
+        redis_host="redis://localhost:6479",
+        # redis_password="RedisPassword",
+        max_retries=3,
+        task_queue_size=10,
+    )
+
+    queue = RedisMessageQueue(config)
+
+    try:
+        print(f"开始批量生成 {n} 条 notifications 消息...")
+        
+        for i in range(n):
+            # 生成 5-60 秒的随机延时
+            delay = random.randint(5, 60)
+            
+            # 计算期待执行时间
+            current_time = time.time()
+            expected_execution_time = current_time + delay
+            
+            # 生成消息内容，包含期待执行时间
+            payload = {
+                "message": f"批量通知消息 #{i+1}",
+                "user_id": 1000 + i,
+                "batch_id": int(current_time),
+                "sequence": i + 1,
+                "total": n,
+                "created_at": current_time,
+                "expected_execution_time": expected_execution_time,
+                "delay_seconds": delay
+            }
+            
+            # 发送延时消息
+            message_id = await queue.produce(
+                topic="notifications",
+                payload=payload,
+                delay=delay,
+                priority=MessagePriority.NORMAL,
+            )
+            
+            print(f"[{i+1}/{n}] 消息发送成功: {message_id}, 延时: {delay}秒, 期待执行时间: {time.strftime('%H:%M:%S', time.localtime(expected_execution_time))}")
+            
+            # 避免发送过于频繁，稍微延时
+            await asyncio.sleep(0.1)
+        
+        print(f"批量生成完成！共发送 {n} 条消息")
+
+    finally:
+        await queue.cleanup()
+
+
 # 示例2：消费者使用
 async def consumer_example():
     """消费者示例"""
@@ -63,7 +116,7 @@ async def consumer_example():
     from mx_rmq.logging import setup_colored_logging
     setup_colored_logging("INFO")
     
-    config = MQConfig(redis_url="redis://localhost:6379")
+    config = MQConfig(redis_host="redis://localhost:6479")
     queue = RedisMessageQueue(config)
 
     async def handle_user_event(payload: dict[str, Any]) -> None:
@@ -74,7 +127,26 @@ async def consumer_example():
 
     async def handle_notification(payload: dict[str, Any]) -> None:
         """处理通知"""
-        print(f"发送通知: {payload}")
+        actual_execution_time = time.time()
+        
+        # 检查是否包含期待执行时间信息
+        if "expected_execution_time" in payload:
+            expected_time = payload["expected_execution_time"]
+            delay_diff = actual_execution_time - expected_time
+            
+            # 格式化时间显示
+            expected_time_str = time.strftime('%H:%M:%S', time.localtime(expected_time))
+            actual_time_str = time.strftime('%H:%M:%S', time.localtime(actual_execution_time))
+            
+            print(f"📨 通知消息: {payload['message']}")
+            print(f"   期待执行时间: {expected_time_str}")
+            print(f"   实际执行时间: {actual_time_str}")
+            print(f"   延迟差异: {delay_diff:.2f}秒 {'(提前)' if delay_diff < 0 else '(延后)' if delay_diff > 0 else '(准时)'}")
+            print(f"   用户ID: {payload.get('user_id', 'N/A')}, 序号: {payload.get('sequence', 'N/A')}/{payload.get('total', 'N/A')}")
+            print("---")
+        else:
+            print(f"发送通知: {payload}")
+        
         # 模拟通知发送
         await asyncio.sleep(0.2)
 
@@ -84,8 +156,81 @@ async def consumer_example():
 
     try:
         # 启动消费者，这里会阻塞住哦。
-        await queue.start_dispatch_consuming()
-        await asyncio.sleep(10)  # 运行10秒
+        await queue.start_background()
+        await asyncio.sleep(160)  # 运行160秒
+        print("消费者运行60秒完成")
+        # 手动停止消费者
+        await queue.stop()
+    finally:
+        await queue.cleanup()
+
+
+# 示例2b：专门的notifications延时测试消费者
+async def notifications_delay_test_consumer():
+    """专门用于测试notifications延时执行时间对比的消费者"""
+    # 配置彩色日志输出
+    from mx_rmq.logging import setup_colored_logging
+    setup_colored_logging("INFO")
+    
+    config = MQConfig(redis_host="redis://localhost:6479")
+    queue = RedisMessageQueue(config)
+
+    async def handle_notification_with_delay_analysis(payload: dict[str, Any]) -> None:
+        """处理通知并分析延时差异"""
+        actual_execution_time = time.time()
+        
+        # 检查是否包含期待执行时间信息
+        if "expected_execution_time" in payload:
+            expected_time = payload["expected_execution_time"]
+            created_time = payload.get("created_at", 0)
+            delay_seconds = payload.get("delay_seconds", 0)
+            delay_diff = actual_execution_time - expected_time
+            
+            # 格式化时间显示
+            created_time_str = time.strftime('%H:%M:%S', time.localtime(created_time))
+            expected_time_str = time.strftime('%H:%M:%S', time.localtime(expected_time))
+            actual_time_str = time.strftime('%H:%M:%S', time.localtime(actual_execution_time))
+            
+            # 计算延时状态
+            if abs(delay_diff) <= 1:  # 1秒内认为准时
+                status = "✅ 准时"
+            elif delay_diff > 0:
+                status = f"⏰ 延后 {delay_diff:.2f}秒"
+            else:
+                status = f"⚡ 提前 {abs(delay_diff):.2f}秒"
+            
+            print(f"\n📨 {payload['message']}")
+            print(f"   创建时间: {created_time_str}")
+            print(f"   设定延时: {delay_seconds}秒")
+            print(f"   期待执行: {expected_time_str}")
+            print(f"   实际执行: {actual_time_str}")
+            print(f"   执行状态: {status}")
+            print(f"   用户信息: ID={payload.get('user_id', 'N/A')}, 批次={payload.get('batch_id', 'N/A')}")
+            print(f"   进度信息: {payload.get('sequence', 'N/A')}/{payload.get('total', 'N/A')}")
+            print("" + "="*50)
+        else:
+            print(f"📨 通知消息: {payload}")
+        
+        # 模拟通知处理
+        await asyncio.sleep(0.1)
+
+    # 注册处理器
+    queue.register("notifications", handle_notification_with_delay_analysis)
+
+    try:
+        print("🚀 启动notifications延时测试消费者...")
+        print("等待消息处理，按 Ctrl+C 停止\n")
+        
+        # 启动消费者
+        await queue.start_background()
+        await asyncio.sleep(300)  # 运行5分钟
+        print("\n⏹️  消费者运行完成")
+        
+        # 手动停止消费者
+        await queue.stop()
+    except KeyboardInterrupt:
+        print("\n⏹️  收到停止信号，正在关闭消费者...")
+        await queue.stop()
     finally:
         await queue.cleanup()
 
@@ -206,7 +351,7 @@ def logger_service_example():
 # 示例5：高级用法 - 直接使用服务组件
 async def advanced_service_usage():
     """高级用法：直接使用服务组件"""
-    config = MQConfig(redis_url="redis://localhost:6379")
+    config = MQConfig(redis_host="redis://localhost:6479")
 
     # 创建日志服务
     logger_service = LoggerService("AdvancedExample")
@@ -214,7 +359,7 @@ async def advanced_service_usage():
     # 初始化 Redis 连接
     import redis.asyncio as aioredis
 
-    redis_pool = aioredis.ConnectionPool.from_url(config.redis_url)
+    redis_pool = aioredis.ConnectionPool.from_url(config.redis_host)
     redis = aioredis.Redis(connection_pool=redis_pool)
 
     try:
@@ -232,10 +377,6 @@ async def advanced_service_usage():
 
         context.register_handler("custom_topic", custom_handler)
 
-        # 创建消费服务
-        task_queue = asyncio.Queue(maxsize=100)
-        consumer_service = ConsumerService(context, task_queue)
-
         logger_service.logger.info("服务组件创建完成")
 
     finally:
@@ -245,7 +386,7 @@ async def advanced_service_usage():
 # 示例6：批量生成延时任务
 async def generate_tasks():
     """批量生成延时任务"""
-    config = MQConfig(redis_url="redis://localhost:6379")
+    config = MQConfig(redis_host="redis://localhost:6479")
     queue = RedisMessageQueue(config)
 
     try:
@@ -267,7 +408,7 @@ async def generate_tasks():
 # 示例7：完整的演示
 async def complete_demo():
     """完整的演示：生产者+消费者"""
-    config = MQConfig(redis_url="redis://localhost:6379")
+    config = MQConfig(redis_host="redis://localhost:6479")
     
     # 创建生产者
     producer = RedisMessageQueue(config)
@@ -293,7 +434,8 @@ async def complete_demo():
     
     try:
         # 启动消费者
-        consumer_task = asyncio.create_task(consumer.start_dispatch_consuming())
+        # asyncio.create_task(consumer.start_dispatch_consuming())
+        await consumer.start_background()
         
         # 等待消费者启动
         await asyncio.sleep(1)
@@ -318,6 +460,8 @@ async def complete_demo():
         # 等待处理完成
         print("等待消息处理...")
         await asyncio.sleep(15)
+        # 停止消费者
+        await consumer.stop()
         
     finally:
         await producer.cleanup()
@@ -424,6 +568,8 @@ if __name__ == "__main__":
         print(" uv run  python usage_sample.py demo           # 运行完整演示")
         print(" uv run  python usage_sample.py main           # 运行综合演示")
         print(" uv run  python usage_sample.py generate       # 运行生成批量延时任务")
+        print(" uv run  python usage_sample.py batch_notifications [n] # 批量生成 n 条 notifications 消息(默认10条)")
+        print(" uv run  python usage_sample.py notifications_consumer    # 启动notifications延时测试消费者")
         sys.exit(1)
 
     mode = sys.argv[1]
@@ -448,6 +594,18 @@ if __name__ == "__main__":
         asyncio.run(main())
     elif mode == "generate":
         asyncio.run(generate_tasks())
+    elif mode == "batch_notifications":
+        # 获取消息数量参数，默认为10
+        n = 10
+        if len(sys.argv) > 2:
+            try:
+                n = int(sys.argv[2])
+            except ValueError:
+                print("错误：消息数量必须是整数")
+                sys.exit(1)
+        asyncio.run(batch_notifications_producer(n))
+    elif mode == "notifications_consumer":
+        asyncio.run(notifications_delay_test_consumer())
     elif mode == "test_all_logging":
         test_all_logging()
     else:

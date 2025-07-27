@@ -40,4 +40,4 @@ for i = 1, #ready_tasks do
     end
 end
 
-return results 
+return results

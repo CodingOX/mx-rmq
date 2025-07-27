@@ -12,7 +12,7 @@ class TestMQConfig:
         config = MQConfig()
 
         # 验证默认Redis配置
-        assert config.redis_url == "redis://localhost:6379"
+        assert config.redis_host == "redis://localhost:6379"
         assert config.redis_db == 0
         assert config.connection_pool_size == 20
 
@@ -43,14 +43,14 @@ class TestMQConfig:
     def test_custom_config(self):
         """测试自定义配置"""
         config = MQConfig(
-            redis_url="redis://custom:6380",
+            redis_host="redis://custom:6380",
             redis_db=1,
             max_workers=20,
             max_retries=5,
             log_level="DEBUG",
         )
 
-        assert config.redis_url == "redis://custom:6380"
+        assert config.redis_host == "redis://custom:6380"
         assert config.redis_db == 1
         assert config.max_workers == 20
         assert config.max_retries == 5
@@ -70,8 +70,8 @@ class TestMQConfig:
         ]
 
         for url in valid_urls:
-            config = MQConfig(redis_url=url)
-            assert config.redis_url == url
+            config = MQConfig(redis_host=url)
+            assert config.redis_host == url
 
     def test_redis_db_validation(self):
         """测试Redis数据库编号验证"""
@@ -273,7 +273,7 @@ class TestMQConfig:
 
         # 由于配置了frozen=True，尝试修改会抛出异常
         with pytest.raises(ValueError):
-            config.redis_url = "redis://new:6379"
+            config.redis_host = "redis://new:6379"
 
         with pytest.raises(ValueError):
             config.max_workers = 10
@@ -281,7 +281,7 @@ class TestMQConfig:
     def test_config_serialization(self):
         """测试配置序列化"""
         config = MQConfig(
-            redis_url="redis://test:6379", redis_db=1, max_workers=15, log_level="DEBUG"
+            redis_host="redis://test:6379", redis_db=1, max_workers=15, log_level="DEBUG"
         )
 
         # 测试转换为字典
@@ -307,7 +307,7 @@ class TestMQConfig:
         }
 
         config = MQConfig.model_validate(config_data)
-        assert config.redis_url == "redis://from_dict:6379"
+        assert config.redis_host == "redis://from_dict:6379"
         assert config.redis_db == 2
         assert config.max_workers == 25
         assert config.max_retries == 7

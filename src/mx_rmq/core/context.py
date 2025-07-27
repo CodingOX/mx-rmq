@@ -84,10 +84,15 @@ class QueueContext:
         extra_info = f", {', '.join(f'{k}={v}' for k, v in kwargs.items())}" if kwargs else ""
         self._logger.error(f"{message} {extra_info}", exc_info=error)
 
-    def log_info(self, message: str, **kwargs) -> None:
+    def log_info(self, message: str, **kwargs: Any) -> None:
         """记录消息事件"""
         extra_info = f", {', '.join(f'{k}={v}' for k, v in kwargs.items())}" if kwargs else ""
         self._logger.info(f"{message} {extra_info}")
+
+    def log_debug(self, message: str, **kwargs: Any) -> None:
+        """记录调试信息"""
+        extra_info = f", {', '.join(f'{k}={v}' for k, v in kwargs.items())}" if kwargs else ""
+        self._logger.debug(f"{message} {extra_info}")
 
     def get_global_key(self, key: GlobalKeys) -> str:
         """

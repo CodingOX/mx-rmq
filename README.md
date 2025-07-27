@@ -69,9 +69,11 @@ async def main():
         "amount": 99.99
     })
     
-    # 启动消费者（会阻塞）
-    await mq.start_dispatch_consuming()
-
+    # 不会阻塞
+    task = await mq.start_background()  
+    #阻塞下
+    
+    await task
 if __name__ == "__main__":
     asyncio.run(main())
 ```
@@ -116,7 +118,7 @@ mq = RedisMessageQueue()
 
 # 或自定义配置
 config = MQConfig(
-    redis_url="redis://localhost:6379",
+    redis_host="redis://localhost:6379",
     max_workers=10,
     task_queue_size=20
 )
@@ -652,7 +654,7 @@ from mx_rmq import MQConfig
 
 config = MQConfig(
     # Redis 连接配置
-    redis_url="redis://localhost:6379",      # Redis连接URL
+    redis_host="redis://localhost:6379",      # Redis连接URL
     redis_db=0,                              # Redis数据库编号 (0-15)
     redis_password=None,                     # Redis密码
     queue_prefix="",                         # 队列前缀，用于多环境隔离
@@ -698,7 +700,7 @@ import os
 from mx_rmq import MQConfig
 
 config = MQConfig(
-    redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
+    redis_host=os.getenv("REDIS_URL", "redis://localhost:6379"),
     redis_password=os.getenv("REDIS_PASSWORD"),
     max_workers=int(os.getenv("MQ_MAX_WORKERS", "5")),
     task_queue_size=int(os.getenv("MQ_TASK_QUEUE_SIZE", "8")),
@@ -1432,6 +1434,7 @@ async def memory_monitor():
 **症状:** `ConnectionError`, `TimeoutError`
 
 **解决方案:**
+
 ```python
 # 1. 检查Redis配置
 config = MQConfig(
@@ -1444,7 +1447,7 @@ config = MQConfig(
 async def create_redis_with_retry(config: MQConfig, max_retries: int = 3):
     for attempt in range(max_retries):
         try:
-            redis = aioredis.from_url(config.redis_url)
+            redis = aioredis.from_url(config.redis_host)
             await redis.ping()
             return redis
         except Exception as e:

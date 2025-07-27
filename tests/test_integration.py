@@ -27,7 +27,7 @@ class TestRedisMessageQueueIntegration:
     def config(self):
         """测试配置"""
         return MQConfig(
-            redis_url="redis://localhost:6379",
+            redis_host="redis://localhost:6379",
             redis_db=1,
             max_workers=2,
             task_queue_size=5,
@@ -202,7 +202,7 @@ class TestRedisMessageQueueIntegration:
     async def test_configuration_validation(self, config):
         """测试配置验证"""
         # 测试有效配置
-        assert config.redis_url == "redis://localhost:6379"
+        assert config.redis_host == "redis://localhost:6379"
         assert config.max_workers == 2
         assert config.task_queue_size == 5
 
