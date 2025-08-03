@@ -6,7 +6,7 @@
 -- ARGV[1]: message_id
 -- ARGV[2]: payload (JSON string)
 -- ARGV[3]: topic
--- ARGV[4]: execute_time
+-- ARGV[4]: delay_seconds (延时秒数)
 
 local payload_map = KEYS[1]
 local delay_tasks = KEYS[2]
@@ -15,11 +15,14 @@ local pubsub_channel = KEYS[3]
 local id = ARGV[1]
 local payload = ARGV[2]
 local topic = ARGV[3]
-local execute_time = tonumber(ARGV[4])
+local delay_seconds = tonumber(ARGV[4])
 
 -- 获取Redis服务器当前时间（毫秒）
 local redis_time = redis.call('TIME')
 local current_time = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
+
+-- 计算执行时间（当前时间 + 延时秒数转换为毫秒）
+local execute_time = current_time + delay_seconds * 1000
 
 -- 获取当前最早的任务（在插入新任务之前）
 -- 索引1: "task_id_123" (任务ID)  索引2: "1672531200000" (执行时间戳)
@@ -59,4 +62,4 @@ if pubsub_channel and pubsub_channel ~= '' then
     end
 end
 
-return 'OK' 
+return 'OK'

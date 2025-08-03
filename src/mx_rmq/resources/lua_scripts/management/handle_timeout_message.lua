@@ -2,17 +2,18 @@
 -- 处理过期消息，检测超时任务
 -- KEYS[1]: all_expire_monitor
 -- KEYS[2]: payload_map
--- ARGV[1]: current_time
+
+-- ARGV[1]: target_time
 -- ARGV[2]: batch_size
 
 local expire_monitor = KEYS[1]
 local payload_map = KEYS[2]
 
-local current_time = ARGV[1]
+local target_time = ARGV[1]
 local batch_size = ARGV[2]
 
 -- 获取过期的消息ID
-local expired_ids = redis.call('ZRANGE', expire_monitor, 0, current_time, 'BYSCORE', 'LIMIT', 0, batch_size)
+local expired_ids = redis.call('ZRANGE', expire_monitor, 0, target_time, 'BYSCORE', 'LIMIT', 0, batch_size)
 
 local results = {}
 
@@ -21,6 +22,7 @@ for i = 1, #expired_ids do
     
     -- 获取消息和队列信息
     local payload = redis.call('HGET', payload_map, msg_id)
+    --  包含全局前缀了
     local queue_name = redis.call('HGET', payload_map, msg_id..':queue')
     
     if payload and queue_name then

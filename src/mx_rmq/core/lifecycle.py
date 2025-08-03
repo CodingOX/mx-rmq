@@ -5,6 +5,7 @@
 import json
 import time
 
+from loguru import logger
 from ..constants import GlobalKeys, TopicKeys
 from ..message import Message
 from .context import QueueContext
@@ -22,14 +23,14 @@ class MessageLifecycleService:
             await self.context.lua_scripts["complete_message"](
                 keys=[
                     self.context.get_global_key(GlobalKeys.PAYLOAD_MAP),
-                    self.context.get_topic_key(topic, TopicKeys.PROCESSING),
+                    self.context.get_global_topic_key(topic, TopicKeys.PROCESSING),
                     self.context.get_global_key(GlobalKeys.EXPIRE_MONITOR),
                 ],
                 args=[message_id],
             )
         except Exception as e:
-            self.context.log_error(
-                "完成消息处理失败", e, message_id=message_id, topic=topic
+            logger.exception(
+                f"完成消息处理失败, message_id={message_id}, topic={topic}"
             )
             raise
 
@@ -44,31 +45,22 @@ class MessageLifecycleService:
             else:
                 await self._handle_final_failure(message, error)
         except Exception as e:
-            self.context.log_error("处理消息失败时出错", e, message_id=message.id)
+            logger.exception(f"处理消息失败时出错, message_id={message.id}")
 
     async def _handle_retryable_failure(
         self, message: Message, error: Exception
     ) -> None:
         """处理可重试的失败消息"""
         await self.retry_message(message, message.topic)
-        self.context.log_info(
-            "消息重试调度",
-            message_id=message.id,
-            topic=message.topic,
-            retry_count=message.meta.retry_count,
-            max_retries=message.meta.max_retries,
-            error=str(error),
+        logger.info(
+            f"消息重试调度, message_id={message.id}, topic={message.topic}, retry_count={message.meta.retry_count}, max_retries={message.meta.max_retries}, error={str(error)}"
         )
 
     async def _handle_final_failure(self, message: Message, error: Exception) -> None:
         """处理最终失败的消息"""
         await self.move_to_dead_letter_queue(message)
-        self.context.log_info(
-            "消息移入死信队列",
-            message_id=message.id,
-            topic=message.topic,
-            retry_count=message.meta.retry_count,
-            error=str(error),
+        logger.info(
+            f"消息移入死信队列, message_id={message.id}, topic={message.topic}, retry_count={message.meta.retry_count}, error={str(error)}"
         )
 
     async def handle_expired_message(self, message: Message, queue_name: str) -> None:
@@ -80,22 +72,21 @@ class MessageLifecycleService:
             else:
                 await self._handle_expired_final(message, queue_name)
         except Exception as e:
-            self.context.log_error("处理过期消息失败", e, message_id=message.id)
+            logger.exception(f"处理过期消息失败, message_id={message.id}")
 
     async def _handle_expired_retry(self, message: Message, queue_name: str) -> None:
         """处理可重试的过期消息"""
         await self.retry_message(message, queue_name)
-        self.context.log_info(
-            "过期消息重试",
-            message_id=message.id,
-            queue_name=queue_name,
-            retry_count=message.meta.retry_count,
+        logger.info(
+            f"过期消息重试, message_id={message.id}, queue_name={queue_name}, retry_count={message.meta.retry_count}"
         )
 
     async def _handle_expired_final(self, message: Message, queue_name: str) -> None:
         """处理最终过期的消息"""
         await self.move_to_dead_letter_queue(message)
-        self.context.log_info("过期消息移入死信队列", message_id=message.id, queue_name=queue_name)
+        logger.info(
+            f"过期消息移入死信队列, message_id={message.id}, queue_name={queue_name}"
+        )
 
     async def handle_stuck_message(
         self, msg_id: str, topic: str, processing_key: str
@@ -107,7 +98,9 @@ class MessageLifecycleService:
                 self.context.get_global_key(GlobalKeys.PAYLOAD_MAP), msg_id
             )  # type: ignore
             if not payload_json:
-                self.context._logger.warning(f"卡死消息不存在，从processing队列移除, message_id={msg_id}")
+                logger.warning(
+                    f"卡死消息不存在，从processing队列移除, message_id={msg_id}"
+                )
                 await self.context.redis.lrem(processing_key, 1, msg_id)  # type: ignore
                 return
 
@@ -115,16 +108,14 @@ class MessageLifecycleService:
             try:
                 message = Message.model_validate_json(payload_json)
             except (json.JSONDecodeError, ValueError) as parse_error:
-                self.context.log_error(
-                    "卡死消息格式错误", parse_error, message_id=msg_id
-                )
+                logger.exception(f"卡死消息格式错误, message_id={msg_id}")
                 await self.context.redis.lrem(processing_key, 1, msg_id)  # type: ignore
                 return
 
             # 第三层验证：检查消息是否在processing队列中
             removed_count = await self.context.redis.lrem(processing_key, 1, msg_id)  # type: ignore
             if removed_count == 0:
-                self.context._logger.warning(f"卡死消息不在processing队列中, message_id={msg_id}")
+                logger.warning(f"卡死消息不在processing队列中, message_id={msg_id}")
                 return
 
             # 核心业务逻辑：处理卡死消息
@@ -144,17 +135,13 @@ class MessageLifecycleService:
         # 根据重试能力选择处理方式
         if message.can_retry():
             await self.retry_message(message, topic)
-            self.context.log_info(
-                "卡死消息重新调度",
-                message_id=msg_id,
-                topic=topic,
-                retry_count=message.meta.retry_count,
-                reason="stuck_timeout",
+            logger.info(
+                f"卡死消息重新调度, message_id={msg_id}, topic={topic}, retry_count={message.meta.retry_count}, reason=stuck_timeout"
             )
         else:
             await self.move_to_dead_letter_queue(message)
-            self.context.log_info(
-                "卡死消息移入死信队列", message_id=msg_id, topic=topic, reason="stuck_timeout"
+            logger.info(
+                f"卡死消息移入死信队列, message_id={msg_id}, topic={topic}, reason=stuck_timeout"
             )
 
         # 从过期监控中移除
@@ -166,22 +153,24 @@ class MessageLifecycleService:
         self, msg_id: str, processing_key: str, error: Exception
     ) -> None:
         """清理卡死消息的异常处理"""
-        self.context.log_error("处理卡死消息失败", error, message_id=msg_id)
+        logger.exception(f"处理卡死消息失败, message_id={msg_id}")
         try:
             await self.context.redis.lrem(processing_key, 1, msg_id)  # type: ignore
-            self.context._logger.info(f"已从processing队列移除问题消息, message_id={msg_id}")
+            logger.info(f"已从processing队列移除问题消息, message_id={msg_id}")
         except Exception as cleanup_error:
-            self.context.log_error("清理卡死消息失败", cleanup_error, message_id=msg_id)
+            logger.exception(f"清理卡死消息失败, message_id={msg_id}")
 
-    async def retry_message(self, message: Message, queue_name: str) -> None:
+    async def retry_message(self, message: Message, topic: str) -> None:
         """重试消息"""
         try:
             retry_delay = message.get_retry_delay()
-            current_time = int(time.time() * 1000)
+            current_time = int(time.time())
 
-            # 更新过期时间
+            # 更新过期时间（使用秒级时间戳）
             new_expire_time = (
-                current_time + retry_delay + self.context.config.message_ttl
+                current_time * 1000
+                + retry_delay * 1000
+                + self.context.config.message_ttl
             )
             message.meta.expire_at = new_expire_time
 
@@ -190,16 +179,22 @@ class MessageLifecycleService:
                 keys=[
                     self.context.get_global_key(GlobalKeys.PAYLOAD_MAP),
                     self.context.get_global_key(GlobalKeys.DELAY_TASKS),
+                    self.context.get_global_key(GlobalKeys.EXPIRE_MONITOR),
+                    self.context.get_global_topic_key(
+                        topic, TopicKeys.PROCESSING
+                    ),  # 新增：processing队列
                 ],
                 args=[
                     message.id,
-                    message.model_dump_json(by_alias=True, exclude_none=True),
+                    message.model_dump_json(
+                        by_alias=True, exclude_none=True
+                    ),  # 新的 message 消息体
                     retry_delay,
-                    current_time,
+                    topic,  # 新增：topic参数
                 ],
             )
         except Exception as e:
-            self.context.log_error("重试消息失败", e, message_id=message.id)
+            logger.exception(f"重试消息失败, message_id={message.id}")
             raise
 
     async def move_to_dead_letter_queue(self, message: Message) -> None:
@@ -213,9 +208,16 @@ class MessageLifecycleService:
                     self.context.get_global_key(GlobalKeys.DLQ_QUEUE),
                     self.context.get_global_key(GlobalKeys.EXPIRE_MONITOR),
                     self.context.get_global_key(GlobalKeys.PAYLOAD_MAP),
+                    self.context.get_global_topic_key(
+                        message.topic, TopicKeys.PROCESSING
+                    ),  # 新增：processing队列
                 ],
-                args=[message.id, message.model_dump_json(by_alias=True, exclude_none=True)],
+                args=[
+                    message.id,
+                    message.model_dump_json(by_alias=True, exclude_none=True),
+                    message.topic,  # 新增：topic参数
+                ],
             )
-        except Exception as e:
-            self.context.log_error("移入死信队列失败", e, message_id=message.id)
+        except Exception:
+            logger.exception(f"移入死信队列失败, message_id={message.id}")
             raise

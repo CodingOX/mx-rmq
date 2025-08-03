@@ -36,39 +36,56 @@ class MessageMeta(BaseModel):
     # model_config = {"exclude_none": True}  # type: ignore
 
     status: MessageStatus = Field(default=MessageStatus.PENDING, description="消息状态")
-    retry_count: int = Field(default=0, ge=0, description="重试次数", alias="retryCount")
-    max_retries: int = Field(default=3, ge=0, description="最大重试次数", alias="maxRetries")
-    retry_delays: list[int] = Field(
-        default_factory=lambda: [60, 300, 1800], description="重试延迟间隔（秒）", alias="retryDelays"
+    delay: int = Field(default=0, description="延迟时间（秒）")
+    
+    retry_count: int = Field(
+        default=0, ge=0, description="重试次数", alias="retryCount"
     )
-    last_error: str | None = Field(default=None, description="最后一次错误信息", alias="lastError")
+    max_retries: int = Field(
+        default=3, ge=0, description="最大重试次数", alias="maxRetries"
+    )
+    retry_delays: list[int] = Field(
+        default_factory=lambda: [60, 300, 1800],
+        description="重试延迟间隔（秒）",
+        alias="retryDelays",
+    )
+    last_error: str | None = Field(
+        default=None, description="最后一次错误信息", alias="lastError"
+    )
     expire_at: int = Field(
         default_factory=lambda: int(time.time() * 1000) + 86400000,  # 默认24小时后过期
         ge=0,
         description="过期时间戳 ms",
-        alias="expireAt"
+        alias="expireAt",
     )
     created_at: int = Field(
-        default_factory=lambda: int(time.time() * 1000), description="创建时间戳 ms",
-        alias="createdAt"
+        default_factory=lambda: int(time.time() * 1000),
+        description="创建时间戳 ms",
+        alias="createdAt",
     )
     updated_at: int = Field(
-        default_factory=lambda: int(time.time() * 1000), description="更新时间戳 ms",
-        alias="updatedAt"
+        default_factory=lambda: int(time.time() * 1000),
+        description="更新时间戳 ms",
+        alias="updatedAt",
     )
-    last_retry_at: int | None = Field(default=None, description="最后重试时间戳 ms", alias="lastRetryAt")
+    last_retry_at: int | None = Field(
+        default=None, description="最后重试时间戳 ms", alias="lastRetryAt"
+    )
     processing_started_at: int | None = Field(
-        default=None, description="处理开始时间戳 ms",
-        alias="processingStartedAt"
+        default=None, description="处理开始时间戳 ms", alias="processingStartedAt"
     )
-    completed_at: int | None = Field(default=None, description="完成时间戳 ms", alias="completedAt")
+    completed_at: int | None = Field(
+        default=None, description="完成时间戳 ms", alias="completedAt"
+    )
     dead_letter_at: int | None = Field(
         default=None, description="进入死信队列时间戳 ms", alias="deadLetterAt"
     )
     stuck_detected_at: int | None = Field(
         default=None, description="检测到卡死时间戳 ms", alias="stuckDetectedAt"
     )
-    stuck_reason: str | None = Field(default=None, description="卡死原因", alias="stuckReason")
+    stuck_reason: str | None = Field(
+        default=None, description="卡死原因", alias="stuckReason"
+    )
     retried_from_dlq_at: int | None = Field(
         default=None, description="从死信队列重试时间戳 ms", alias="retriedFromDlqAt"
     )

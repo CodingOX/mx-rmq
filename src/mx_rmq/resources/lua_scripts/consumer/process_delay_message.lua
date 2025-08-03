@@ -26,6 +26,7 @@ for i = 1, #ready_tasks do
     
     if queue_name then
         -- 移动到对应的pending队列
+        -- 生产时 传入全局前缀了
         local pending_key = queue_name..':pending'
         redis.call('LPUSH', pending_key, task_id)
         

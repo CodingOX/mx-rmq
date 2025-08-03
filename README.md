@@ -1,10 +1,12 @@
 # MX-RMQ 使用指南
 
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Redis](https://img.shields.io/badge/redis-5.0+-red.svg)](https://redis.io/)
 
 MX-RMQ 是一个高性能、可靠的基于Redis的分布式消息队列系统，支持普通消息、延时消息、优先级消息，具备完善的监控和重试机制。
+
+> 目前已基本生产可用。
 
 ## 目录
 
@@ -13,7 +15,6 @@ MX-RMQ 是一个高性能、可靠的基于Redis的分布式消息队列系统�
 - [安装](#安装)
 - [基本使用](#基本使用)
 - [高级功能](#高级功能)
-- [日志系统](#日志系统)
 - [配置参考](#配置参考)
 - [API 参考](#api-参考)
 - [监控和管理](#监控和管理)
@@ -60,7 +61,7 @@ async def main():
     mq = RedisMessageQueue()
     
     # 注册消息处理器
-    mq.register("order_created", handle_order)
+    mq.register_handler("order_created", handle_order)
     
     # 生产消息
     await mq.produce("order_created", {
@@ -69,11 +70,14 @@ async def main():
         "amount": 99.99
     })
     
-    # 不会阻塞
-    task = await mq.start_background()  
-    #阻塞下
+    # 非阻塞启动（推荐）
+    await mq.start_background()
     
-    await task
+    # 等待消息处理
+    await asyncio.sleep(2)
+    
+    # 优雅停止
+    await mq.stop()
 if __name__ == "__main__":
     asyncio.run(main())
 ```
@@ -104,7 +108,7 @@ pip install git+https://github.com/CodingOX/mx-rmq.git
 ### 系统要求
 
 - Python 3.12+
-- Redis 5.0+
+- Redis 5.0+ 【推荐 Redis 7.4+】
 
 ## 基本使用
 
@@ -129,7 +133,7 @@ mq = RedisMessageQueue(config)
 
 ```python
 # 方式1: 使用装饰器
-@mq.register("user_registration")
+@mq.register_handler("user_registration")
 async def handle_user_registration(payload: dict) -> None:
     user_id = payload['user_id']
     email = payload['email']
@@ -139,7 +143,7 @@ async def handle_user_registration(payload: dict) -> None:
 async def handle_payment(payload: dict) -> None:
     print(f"处理支付: {payload}")
 
-mq.register("payment_completed", handle_payment)
+mq.register_handler("payment_completed", handle_payment)
 ```
 
 ### 3. 生产消息
@@ -157,9 +161,50 @@ print(f"消息已发送: {message_id}")
 
 ### 4. 启动消费者
 
+MX-RMQ 提供多种方式启动消费者，以适应不同使用场景：
+
+#### 方式1: 非阻塞启动（推荐）
+
+```python
+# 非阻塞启动，立即返回控制权
+background_task = await mq.start_background()
+
+# 可以继续执行其他操作
+await mq.produce("test_topic", {"message": "Hello World"})
+
+# 等待一段时间或执行其他任务
+await asyncio.sleep(10)
+
+# 优雅停止
+await mq.stop()
+```
+
+#### 方式2: 阻塞式启动（传统方式）
+
 ```python
 # 启动消费者（会阻塞，直到收到停机信号）
-await mq.start_dispatch_consuming()
+await mq.start()
+```
+
+#### 方式3: 异步上下文管理器
+
+```
+# 使用异步上下文管理器自动管理资源
+async with RedisMessageQueue() as mq:
+    mq.register_handler("test_topic", handle_message)
+    await mq.start_background()
+    await mq.produce("test_topic", {"message": "Hello World"})
+    await asyncio.sleep(5)
+    # 自动停止和清理资源
+```
+
+#### 方式4: 同步运行（简单场景）
+
+```
+# 同步运行指定时长
+mq = RedisMessageQueue()
+mq.register_handler("test_topic", handle_message)
+mq.run(duration=10.0)  # 运行10秒后自动停止
 ```
 
 ## 高级功能
@@ -239,7 +284,7 @@ await mq.produce(
 
 ### 批量生产消息
 
-```python
+```
 # 批量发送多个消息
 messages = [
     {"topic": "order_created", "payload": {"order_id": f"ORD_{i}"}}
@@ -250,406 +295,11 @@ for msg in messages:
     await mq.produce(msg["topic"], msg["payload"])
 ```
 
-## 日志系统
-
-MX-RMQ 使用标准的 Python logging 系统，并提供了便捷的配置函数和彩色日志支持。
-
-### 快速开始
-
-#### 1. 基本日志配置
-
-```python
-import logging
-from mx_rmq import RedisMessageQueue
-
-# 方式1：使用标准 logging 配置
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-
-# 方式2：使用 MX-RMQ 提供的便捷配置
-from mx_rmq.logging import setup_basic_logging
-setup_basic_logging("INFO")
-
-# 创建消息队列
-mq = RedisMessageQueue()
-
-# 现在可以看到所有内部日志
-await mq.start_dispatch_consuming()
-```
-
-#### 2. 彩色日志配置
-
-```python
-from mx_rmq.logging import setup_colored_logging
-
-# 配置彩色日志输出
-setup_colored_logging("INFO")
-
-# 或者使用简洁的彩色日志（不显示时间戳）
-from mx_rmq.logging import setup_simple_colored_logging
-setup_simple_colored_logging("INFO")
-
-# 创建消息队列
-mq = RedisMessageQueue()
-```
-
-### 日志配置函数
-
-MX-RMQ 提供了三种便捷的日志配置函数：
-
-#### `setup_basic_logging(level="INFO")`
-基本的日志配置，输出到控制台：
-
-```python
-from mx_rmq.logging import setup_basic_logging
-
-setup_basic_logging("DEBUG")  # 设置为 DEBUG 级别
-```
-
-#### `setup_colored_logging(level="INFO")`
-彩色日志配置，不同级别使用不同颜色：
-
-```python
-from mx_rmq.logging import setup_colored_logging
-
-setup_colored_logging("INFO")
-```
-
-颜色方案：
-- 🔵 **DEBUG**: 青色
-- 🟢 **INFO**: 绿色  
-- 🟡 **WARNING**: 黄色
-- 🔴 **ERROR**: 红色
-- 🟣 **CRITICAL**: 紫色
-
-#### `setup_simple_colored_logging(level="INFO")`
-简洁的彩色日志，不显示时间戳：
-
-```python
-from mx_rmq.logging import setup_simple_colored_logging
-
-setup_simple_colored_logging("INFO")
-```
-
-### 在应用中使用日志
-
-#### 1. 标准方式（推荐）
-
-```python
-import logging
-from mx_rmq import RedisMessageQueue
-from mx_rmq.logging import setup_colored_logging
-
-# 配置彩色日志
-setup_colored_logging("INFO")
-
-# 在每个模块中使用标准方式
-logger = logging.getLogger(__name__)
-
-async def handle_order(payload: dict) -> None:
-    order_id = payload.get("order_id")
-    
-    # 记录业务日志
-    logger.info("开始处理订单", extra={"order_id": order_id})
-    
-    try:
-        # 处理订单逻辑
-        await process_order(payload)
-        logger.info("订单处理成功", extra={"order_id": order_id})
-        
-    except Exception as e:
-        logger.error("订单处理失败", extra={"order_id": order_id}, exc_info=e)
-        raise
-
-# 创建消息队列
-mq = RedisMessageQueue()
-mq.register("order_created", handle_order)
-```
-
-#### 2. 使用 LoggerService（向后兼容）
-
-```python
-from mx_rmq import LoggerService
-from mx_rmq.logging import setup_colored_logging
-
-# 配置彩色日志
-setup_colored_logging("INFO")
-
-# 创建日志服务
-logger_service = LoggerService("PaymentService")
-
-# 使用标准的日志接口
-logger_service.logger.info("支付服务启动")
-
-# 使用便捷方法
-logger_service.log_message_event("支付开始", "msg_123", "payments", user_id=456)
-logger_service.log_error("支付失败", Exception("网络错误"), payment_id="pay_789")
-logger_service.log_metric("处理延迟", 150, unit="ms")
-```
-
-### 完整示例
-
-```python
-import asyncio
-import logging
-from mx_rmq import MQConfig, RedisMessageQueue
-from mx_rmq.logging import setup_colored_logging
-
-# 配置彩色日志
-setup_colored_logging("INFO")
-
-# 获取应用日志器
-logger = logging.getLogger("OrderApp")
-
-async def handle_order(payload: dict) -> None:
-    """处理订单消息"""
-    order_id = payload.get("order_id")
-    
-    logger.info(f"开始处理订单: {order_id}")
-    
-    try:
-        # 模拟订单处理
-        await asyncio.sleep(1)
-        
-        # 模拟不同的处理结果
-        if order_id.endswith("error"):
-            raise ValueError("订单数据无效")
-        elif order_id.endswith("warn"):
-            logger.warning(f"订单处理有警告: {order_id}")
-        
-        logger.info(f"订单处理成功: {order_id}")
-        
-    except Exception as e:
-        logger.error(f"订单处理失败: {order_id}", exc_info=e)
-        raise
-
-async def main():
-    # 创建消息队列
-    mq = RedisMessageQueue()
-    
-    # 注册处理器
-    mq.register("order_created", handle_order)
-    
-    # 发送一些测试消息
-    await mq.produce("order_created", {"order_id": "ORD_001"})
-    await mq.produce("order_created", {"order_id": "ORD_002_warn"})
-    await mq.produce("order_created", {"order_id": "ORD_003_error"})
-    
-    # 启动消费者
-    await mq.start_dispatch_consuming()
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-### 日志级别说明
-
-```python
-import logging
-
-logger = logging.getLogger("MyApp")
-
-# DEBUG: 详细的调试信息
-logger.debug("计算折扣", extra={"original_price": 100, "discount_rate": 0.1})
-
-# INFO: 重要的业务事件
-logger.info("订单支付成功", extra={"order_id": "ORD_123", "payment_id": "PAY_456"})
-
-# WARNING: 潜在问题但不影响功能
-logger.warning("库存不足", extra={"product_id": "PROD_789", "requested": 10, "available": 5})
-
-# ERROR: 错误需要关注
-logger.error("支付网关错误", extra={"order_id": "ORD_123"}, exc_info=True)
-
-# CRITICAL: 严重错误需要立即处理
-logger.critical("数据库连接失败", extra={"database": "order_db"})
-```
-
-### 环境变量配置
-
-可以通过环境变量配置日志级别：
-
-```bash
-# 设置日志级别
-export LOG_LEVEL=DEBUG
-
-# 在应用中使用
-python your_app.py
-```
-
-```python
-import os
-from mx_rmq.logging import setup_colored_logging
-
-# 从环境变量读取日志级别
-log_level = os.getenv("LOG_LEVEL", "INFO")
-setup_colored_logging(log_level)
-```
-
-### 日志最佳实践
-
-#### 1. 使用结构化日志
-
-```python
-# ✅ 推荐：使用 extra 参数传递结构化数据
-logger.info("订单创建", extra={
-    "order_id": "ORD_123",
-    "user_id": 456, 
-    "amount": 99.99,
-    "currency": "USD"
-})
-
-# ❌ 避免：字符串拼接
-logger.info(f"用户 {user_id} 创建了订单 {order_id}，金额 {amount}")
-```
-
-#### 2. 错误处理中的日志
-
-```python
-async def handle_payment(payload: dict) -> None:
-    order_id = payload.get("order_id")
-    
-    try:
-        await process_payment(payload)
-        
-    except PaymentValidationError as e:
-        # 业务验证错误，记录但不重试
-        logger.warning("支付验证失败", extra={
-            "order_id": order_id, 
-            "error": str(e),
-            "error_type": "validation"
-        })
-        raise  # 重新抛出，进入死信队列
-        
-    except PaymentGatewayError as e:
-        # 外部服务错误，可重试
-        logger.error("支付网关错误", extra={
-            "order_id": order_id,
-            "error": str(e),
-            "error_type": "gateway",
-            "retryable": True
-        })
-        raise  # 重新抛出，触发重试
-        
-    except Exception as e:
-        # 未知错误，记录详细信息
-        logger.error("支付处理异常", extra={
-            "order_id": order_id,
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "payload": payload
-        }, exc_info=True)
-        raise
-```
-
-#### 3. 性能监控日志
-
-```python
-import time
-
-async def timed_handler(payload: dict) -> None:
-    start_time = time.time()
-    order_id = payload.get("order_id")
-    
-    try:
-        await process_order(payload)
-        
-    finally:
-        processing_time = time.time() - start_time
-        logger.info("订单处理完成", extra={
-            "order_id": order_id,
-            "processing_time": f"{processing_time:.2f}s"
-        })
-        
-                 # 性能告警
-         if processing_time > 5:
-             logger.warning("订单处理时间过长", extra={
-                 "order_id": order_id,
-                 "processing_time": f"{processing_time:.2f}s"
-             })
-```
-
-### 测试日志功能
-
-您可以使用以下命令测试不同的日志功能：
-
-```bash
-# 测试所有日志功能（推荐）
-uv run python examples/usage_sample.py test_all_logging
-
-# 测试标准日志
-uv run python examples/usage_sample.py logging
-
-# 测试彩色日志
-uv run python examples/usage_sample.py colored
-
-# 测试简洁彩色日志
-uv run python examples/usage_sample.py simple_colored
-
-# 测试 LoggerService 兼容性
-uv run python examples/usage_sample.py logger
-
-# 测试带彩色日志的 consumer
-uv run python examples/usage_sample.py consumer
-```
-
-### 常见问题
-
-#### Q: 为什么看不到日志输出？
-
-**A:** MX-RMQ 遵循 Python 库最佳实践，默认使用 `NullHandler`，需要用户配置日志处理器：
-
-```python
-# 解决方案1：使用便捷配置函数
-from mx_rmq.logging import setup_colored_logging
-setup_colored_logging("INFO")
-
-# 解决方案2：使用标准 logging 配置
-import logging
-logging.basicConfig(level=logging.INFO)
-```
-
-#### Q: 如何在生产环境中使用文件日志？
-
-**A:** 使用标准的 Python logging 配置：
-
-```python
-import logging
-from logging.handlers import RotatingFileHandler
-
-# 配置文件日志
-file_handler = RotatingFileHandler(
-    'app.log', 
-    maxBytes=10*1024*1024,  # 10MB
-    backupCount=5
-)
-file_handler.setLevel(logging.INFO)
-
-# 配置控制台日志
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-
-# 设置格式
-formatter = logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-file_handler.setFormatter(formatter)
-console_handler.setFormatter(formatter)
-
-# 配置根日志器
-logger = logging.getLogger('mx_rmq')
-logger.setLevel(logging.INFO)
-logger.addHandler(file_handler)
-logger.addHandler(console_handler)
-```
-
 ## 配置参考
 
 ### MQConfig 完整参数
 
-```python
+```
 from mx_rmq import MQConfig
 
 config = MQConfig(
@@ -700,7 +350,8 @@ import os
 from mx_rmq import MQConfig
 
 config = MQConfig(
-    redis_host=os.getenv("REDIS_URL", "redis://localhost:6379"),
+    redis_host=os.getenv("REDIS_URL", "localhost"),
+    redis_port=os.getenv("REDIS_PORT","6379"),
     redis_password=os.getenv("REDIS_PASSWORD"),
     max_workers=int(os.getenv("MQ_MAX_WORKERS", "5")),
     task_queue_size=int(os.getenv("MQ_TASK_QUEUE_SIZE", "8")),
@@ -755,7 +406,7 @@ async def produce(
         RedisError: Redis操作失败
     """
 
-def register(self, topic: str, handler: Callable) -> None:
+def register_handler(self, topic: str, handler: Callable) -> None:
     """
     注册消息处理器
     
@@ -767,9 +418,9 @@ def register(self, topic: str, handler: Callable) -> None:
         ValueError: 处理器不是可调用对象
     """
 
-async def start_dispatch_consuming(self) -> None:
+async def start(self) -> None:
     """
-    启动消息分发和消费
+    启动消息分发和消费（阻塞式）
     
     此方法会阻塞，直到收到停机信号(SIGINT/SIGTERM)
     
@@ -778,9 +429,75 @@ async def start_dispatch_consuming(self) -> None:
         RedisError: Redis连接错误
     """
 
+async def start_background(self) -> Task:
+    """
+    启动消息分发和消费（非阻塞式）
+    
+    此方法不会阻塞，立即返回一个Task对象
+    
+    Returns:
+        Task: 后台任务对象
+        
+    Raises:
+        RuntimeError: 系统未正确初始化
+        RedisError: Redis连接错误
+    """
+
+async def stop(self) -> None:
+    """
+    停止消息队列处理
+    
+    优雅地停止所有后台任务并清理资源
+    """
+
+async def initialize(self) -> None:
+    """
+    手动初始化消息队列
+    
+    通常在start/start_background之前自动调用
+    """
+
 async def cleanup(self) -> None:
     """
     清理资源，关闭Redis连接池
+    """
+
+def run(self, duration: float | None = None) -> None:
+    """
+    同步运行消息队列
+    
+    Args:
+        duration: 运行时长（秒），None表示无限运行直到收到信号
+    """
+
+async def health_check(self) -> dict[str, Any]:
+    """
+    执行健康检查
+    
+    Returns:
+        dict: 包含健康状态信息的字典
+    """
+```
+
+#### 属性
+
+```python
+@property
+def status(self) -> dict[str, Any]:
+    """
+    获取队列状态信息
+    
+    Returns:
+        dict: 包含运行状态、初始化状态、活跃任务数等信息
+    """
+
+@property
+def is_running(self) -> bool:
+    """
+    检查队列是否正在运行
+    
+    Returns:
+        bool: 队列运行状态
     """
 ```
 
@@ -926,101 +643,6 @@ asyncio.create_task(monitor_loop())
 ```
 
 ## 部署指南
-
-### 本地开发环境
-
-```bash
-# 1. 启动Redis
-docker run -d --name redis -p 6379:6379 redis:7-alpine
-
-# 2. 运行应用
-python your_app.py
-```
-
-### Docker 部署
-
-**Dockerfile:**
-```dockerfile
-FROM python:3.12-slim
-
-WORKDIR /app
-
-# 安装依赖
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-
-# 复制代码
-COPY . .
-
-# 启动应用
-CMD ["python", "main.py"]
-```
-
-**docker-compose.yml:**
-```yaml
-version: '3.8'
-services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    command: redis-server --appendonly yes
-    
-  app:
-    build: .
-    depends_on:
-      - redis
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - MQ_MAX_WORKERS=10
-    restart: unless-stopped
-    
-volumes:
-  redis_data:
-```
-
-### 生产环境配置
-
-**Redis 配置建议 (redis.conf):**
-```conf
-# 内存管理
-maxmemory-policy allkeys-lru
-maxmemory 2gb
-
-# 连接管理
-timeout 300
-tcp-keepalive 300
-
-# 持久化配置
-save 900 1      # 900秒内至少1个key变化时保存
-save 300 10     # 300秒内至少10个key变化时保存
-save 60 10000   # 60秒内至少10000个key变化时保存
-
-# AOF持久化
-appendonly yes
-appendfsync everysec
-
-# 性能优化
-hz 10
-dynamic-hz yes
-```
-
-**应用配置:**
-```python
-# 生产环境配置
-config = MQConfig(
-    redis_url="redis://redis-cluster:6379",
-    redis_password="your_secure_password",
-    max_workers=20,
-    task_queue_size=50,
-    connection_pool_size=30,
-    message_ttl=86400 * 7,  # 7天
-    processing_timeout=600,  # 10分钟
-    queue_prefix="prod",    # 环境隔离
-)
-```
 
 ### 高可用部署
 
@@ -1210,7 +832,59 @@ async def handle_batch_emails(payload: dict) -> None:
         await asyncio.sleep(0.1)
 ```
 
-### 5. 多组消费的实现方案
+### 5. API使用建议
+
+#### 推荐使用非阻塞API
+
+```python
+# 推荐：使用非阻塞启动
+async def recommended_usage():
+    mq = RedisMessageQueue()
+    mq.register_handler("topic", message_handler)
+    
+    # 非阻塞启动
+    task = await mq.start_background()
+    
+    # 可以继续执行其他操作
+    await do_other_work()
+    
+    # 优雅停止
+    await mq.stop()
+
+# 不推荐：使用阻塞式启动（除非有特殊需求）
+async def legacy_usage():
+    mq = RedisMessageQueue()
+    mq.register_handler("topic", message_handler)
+    
+    # 会阻塞直到收到信号
+    await mq.start()
+```
+
+#### 使用异步上下文管理器自动管理资源
+
+```
+# 推荐：使用异步上下文管理器
+async def context_manager_usage():
+    async with RedisMessageQueue() as mq:
+        mq.register_handler("topic", message_handler)
+        await mq.start_background()
+        await mq.produce("topic", {"data": "example"})
+        await asyncio.sleep(5)
+        # 自动清理资源
+```
+
+#### 合理使用同步API
+
+```
+# 适用于简单场景的同步API
+def simple_usage():
+    mq = RedisMessageQueue()
+    mq.register_handler("topic", message_handler)
+    # 运行10秒后自动停止
+    mq.run(duration=10.0)
+```
+
+### 6. 多组消费的实现方案
 
 由于系统不支持消费者组功能，如需实现多组消费同一消息，建议采用以下方案：
 
@@ -1226,22 +900,22 @@ async def send_order_created(order_data: dict):
     await mq.produce("order_created_notification", order_data) # 通知处理组
 
 # 注册不同的处理器
-@mq.register("order_created_payment")
+@mq.register_handler("order_created_payment")
 async def handle_payment_processing(payload: dict):
     """处理支付相关逻辑"""
     await process_payment(payload)
 
-@mq.register("order_created_inventory")
+@mq.register_handler("order_created_inventory")
 async def handle_inventory_processing(payload: dict):
     """处理库存相关逻辑"""
     await update_inventory(payload)
 
-@mq.register("order_created_analytics")
+@mq.register_handler("order_created_analytics")
 async def handle_analytics_processing(payload: dict):
     """处理分析相关逻辑"""
     await update_analytics(payload)
 
-@mq.register("order_created_notification")
+@mq.register_handler("order_created_notification")
 async def handle_notification_processing(payload: dict):
     """处理通知相关逻辑"""
     await send_notifications(payload)
@@ -1250,7 +924,7 @@ async def handle_notification_processing(payload: dict):
 **方案2：使用统一的分发器**
 ```python
 # 创建一个分发器topic
-@mq.register("order_created")
+@mq.register_handler("order_created")
 async def order_dispatcher(payload: dict):
     """订单消息分发器"""
     order_id = payload["order_id"]
@@ -1429,33 +1103,6 @@ async def memory_monitor():
         await asyncio.sleep(60)
 ```
 
-#### Q4: Redis 连接错误
-
-**症状:** `ConnectionError`, `TimeoutError`
-
-**解决方案:**
-
-```python
-# 1. 检查Redis配置
-config = MQConfig(
-    redis_url="redis://localhost:6379",
-    connection_pool_size=20,
-    # 添加连接重试
-)
-
-# 2. 实现连接重试
-async def create_redis_with_retry(config: MQConfig, max_retries: int = 3):
-    for attempt in range(max_retries):
-        try:
-            redis = aioredis.from_url(config.redis_host)
-            await redis.ping()
-            return redis
-        except Exception as e:
-            if attempt == max_retries - 1:
-                raise
-            logger.warning(f"Redis连接失败，重试中 ({attempt + 1}/{max_retries})")
-            await asyncio.sleep(2 ** attempt)
-```
 
 ### 性能诊断
 
@@ -1498,7 +1145,7 @@ class PerformanceAnalyzer:
 # 使用示例
 analyzer = PerformanceAnalyzer()
 
-@mq.register("order_created")
+@mq.register_handler("order_created")
 async def handle_order(payload: dict):
     # 处理逻辑
     await process_order(payload)

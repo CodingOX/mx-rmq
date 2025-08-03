@@ -8,6 +8,7 @@ import json
 import time
 from typing import Any
 
+from loguru import logger
 from redis.commands.core import AsyncScript
 
 from ..constants import GlobalKeys, TopicKeys
@@ -37,11 +38,11 @@ class ScheduleService:
     async def process_delay_messages(self) -> None:
         """延时消息处理协程 - 使用优化的调度逻辑"""
         if self.is_running:
-            self.context.log_debug("延时任务调度器已在运行")
+            logger.debug("延时任务调度器已在运行")
             return
-            
+
         self.is_running = True
-        self.context.log_debug("启动延时任务调度器")
+        logger.debug("启动延时任务调度器")
 
         # 将主调度逻辑封装在一个任务中，方便管理
         self.scheduler_task = asyncio.create_task(self.delay_scheduler_loop())
@@ -56,76 +57,97 @@ class ScheduleService:
 
     async def stop_delay_processing(self) -> None:
         """优雅地停止延时消息处理"""
+        # 运行状态检查，如果未运行则直接返回
         if not self.is_running:
+            logger.debug("延时任务调度器未运行，无需停止")
             return
-            
+
         self.is_running = False
-        self.context.log_debug("开始停止延时任务调度器...")
+        logger.info("开始停止延时任务调度器...")
 
-        # 取消主调度任务
-        if self.scheduler_task and not self.scheduler_task.done():
-            self.scheduler_task.cancel()
-        
-        # 设置事件，确保如果调度器正在等待中，能被立即唤醒并检查到 is_running == False
-        self.notification_event.set()
+        try:
+            # 设置事件，确保如果调度器正在等待中，能被立即唤醒并检查到 is_running == False
+            self.notification_event.set()
 
-        # 等待任务完成取消
-        if self.scheduler_task:
-            try:
-                await self.scheduler_task
-            except asyncio.CancelledError:
-                pass # 预期内的异常
+            # 取消主调度任务
+            if self.scheduler_task and not self.scheduler_task.done():
+                self.scheduler_task.cancel()
 
-        self.context.log_debug("延时任务调度器已停止")
+            # 等待任务完成取消，添加5秒超时保护
+            if self.scheduler_task:
+                try:
+                    await asyncio.wait_for(self.scheduler_task, timeout=5.0)
+                except asyncio.TimeoutError:
+                    logger.error("停止延时任务调度器超时，强制结束")
+                    # 如果超时，确保任务被取消
+                    if not self.scheduler_task.done():
+                        self.scheduler_task.cancel()
+                except asyncio.CancelledError:
+                    pass  # 预期内的异常
+                except Exception as e:
+                    logger.exception(f"停止延时任务调度器时发生异常: {e}")
+
+            logger.debug("延时任务调度器已停止")
+        except Exception as e:
+            logger.exception(f"停止延时任务调度器过程中发生错误: {e}")
+        finally:
+            # 确保 scheduler_task 被重置为 None
+            self.scheduler_task = None
 
     async def delay_scheduler_loop(self) -> None:
         """
         核心调度循环（状态机）。
         这是整个优化的核心，它取代了旧的 timer_lock 和 current_timer_task 管理。
         """
-        self.context.log_debug("延时调度主循环已启动")
-        
+        logger.debug("延时调度主循环已启动")
+
         # 首次启动时，短暂延时后立即触发一次调度检查
         await asyncio.sleep(0.2)
-        self.context.log_debug("进程启动，初始化延时任务调度")
-        
+        logger.debug("进程启动，初始化延时任务调度")
+
         while self.is_running:
+            # 在循环开始时添加 is_running 状态检查
+            if not self.is_running:
+                break
+
             try:
                 # 1. 从Redis获取下一个任务信息和等待时间
                 start_time = time.time()
-                lua_script: AsyncScript = self.context.lua_scripts["get_next_delay_task"]
+                lua_script: AsyncScript = self.context.lua_scripts[
+                    "get_next_delay_task"
+                ]
                 delay_tasks_key = self.context.get_global_key(GlobalKeys.DELAY_TASKS)
-                result = await lua_script(
-                    keys=[delay_tasks_key], args=[]
-                )
+                result = await lua_script(keys=[delay_tasks_key], args=[])
                 status = result[0]
                 end_time = time.time()
                 # 🔍 详细日志：调试 Lua 脚本返回值 保留 3 位小数
-                self.context._logger.debug(f"get_next_delay_task 扫描延时队列【{delay_tasks_key}】 耗时: {end_time - start_time:.3f} 秒,返回: {result}")
+                logger.debug(
+                    f"get_next_delay_task 扫描延时队列【{delay_tasks_key}】 耗时: {end_time - start_time:.3f} 秒,返回: {result}"
+                )
 
                 wait_milliseconds: float | None = None
-                
+
                 # 2. 根据状态决定下一步操作
                 if status == "NO_TASK":
-                    self.context._logger.debug("当前无延时任务，等待新任务通知...")
-                    wait_milliseconds = None # 无限期等待
+                    logger.debug("当前无延时任务，等待新任务通知...")
+                    wait_milliseconds = None  # 无限期等待
                 elif status == "EXPIRED":
-                    self.context._logger.info(f"发现过期任务 {result[2]}，立即处理")
+                    logger.info(f"发现过期任务 {result[2]}，立即处理")
                     await self.try_process_expired_tasks()
-                    continue # 处理完后，立即开始下一次循环检查
+                    continue  # 处理完后，立即开始下一次循环检查
                 elif status == "WAITING":
                     wait_milliseconds = int(result[1])
-                    
+
                     # 🛡️ 边界保护：如果等待时间很小，添加小延迟避免时间竞争
                     if wait_milliseconds < 10:  # 小于10毫秒
-                        self.context._logger.debug(
+                        logger.debug(
                             f"任务 {result[3]} 等待时间很短 ({wait_milliseconds}毫秒)，添加缓冲延迟避免时间竞争"
                         )
                         await asyncio.sleep(0.01)  # 等待10毫秒让时间完全过期
                         await self.try_process_expired_tasks()
                         continue
-                    
-                    self.context._logger.debug(
+
+                    logger.debug(
                         f"下一个任务 {result[3]}将在 {wait_milliseconds} 毫秒后到期，开始等待..."
                     )
 
@@ -134,30 +156,69 @@ class ScheduleService:
                     # 清除旧信号，准备接收新信号
                     self.notification_event.clear()
                     # 🔧 关键修复：将毫秒转换为秒数
-                    wait_seconds = wait_milliseconds / 1000.0 if wait_milliseconds is not None else None
-                    # 等待指定的秒数，或者直到 notification_event 被设置
-                    await asyncio.wait_for(
-                        self.notification_event.wait(), timeout=wait_seconds
+                    wait_seconds = (
+                        wait_milliseconds / 1000.0
+                        if wait_milliseconds is not None
+                        else None
                     )
-                    
+
+                    # 为长时间等待（>5秒）实现分段等待机制
+                    if wait_seconds is not None and wait_seconds > 5.0:
+                        # 分段等待，每5秒检查一次停止状态
+                        remaining_time = wait_seconds
+                        while remaining_time > 0 and self.is_running:
+                            segment_wait = min(5.0, remaining_time)
+                            try:
+                                await asyncio.wait_for(
+                                    self.notification_event.wait(), timeout=segment_wait
+                                )
+                                # 如果收到通知，跳出分段等待
+                                break
+                            except asyncio.TimeoutError:
+                                # 分段超时，继续等待剩余时间
+                                remaining_time -= segment_wait
+                                if not self.is_running:
+                                    break
+
+                        # 如果是因为停止状态退出，抛出 CancelledError
+                        if not self.is_running:
+                            raise asyncio.CancelledError("调度器已停止")
+                    else:
+                        # 短时间等待，直接等待
+                        # 在这里增加对 is_running 的检查，确保在停止时能快速退出
+                        if self.is_running:
+                            await asyncio.wait_for(
+                                self.notification_event.wait(), timeout=wait_seconds
+                            )
+                        else:
+                            # 如果已经停止运行，直接抛出 CancelledError
+                            raise asyncio.CancelledError("调度器已停止")
+
                     # 如果代码执行到这里，说明是 notification_event 被触发了 【兜底 或者 pub/sub 通知】
-                    self.context._logger.debug("收到外部通知，重新评估调度计划...")
+                    logger.debug("收到外部通知，重新评估调度计划...")
                     # 直接进入下一次 while 循环，重新从 Redis 获取最新等待时间
 
                 except asyncio.TimeoutError:
                     # 如果代码执行到这里，说明是 wait_for 超时了，定时器自然到期
-                    self.context._logger.debug("定时器到期，开始处理过期任务...")
+                    logger.debug("定时器到期，开始处理过期任务...")
                     await self.try_process_expired_tasks()
                     # 处理完后，会自动进入下一次 while 循环
-                
-            except asyncio.CancelledError:
-                self.context._logger.warning("调度主循环被取消，正在退出...")
-                break # 退出循环
-            except Exception as e:
-                self.context.log_error("调度主循环发生未知错误，暂停后重试", e)
-                await asyncio.sleep(1) # 发生未知错误时，短暂等待防止CPU占用过高（优化：减少等待时间）
 
-        self.context._logger.warning("延时调度主循环已退出")
+            except asyncio.CancelledError:
+                logger.warning("调度主循环被取消，正在退出...")
+                break  # 退出循环
+            except Exception as e:
+                # 在异常处理中添加 is_running 状态检查
+                if self.is_running:
+                    logger.exception("调度主循环发生未知错误，暂停后重试")
+                    await asyncio.sleep(
+                        1
+                    )  # 发生未知错误时，短暂等待防止CPU占用过高（优化：减少等待时间）
+                else:
+                    # 如果已经停止，不记录错误日志，直接退出
+                    break
+
+        logger.warning("延时调度主循环已退出")
 
     async def pubsub_listener(self) -> None:
         """监听pubsub通道 - 逻辑已大大简化"""
@@ -165,15 +226,17 @@ class ScheduleService:
         pubsub = None
         consecutive_failures = 0
         max_consecutive_failures = 5
-        
+
         while self.is_running:
             try:
                 # 创建新的pubsub连接
                 if pubsub is None:
                     pubsub = self.context.redis.pubsub()
-                    channel = self.context.get_global_key(GlobalKeys.DELAY_PUBSUB_CHANNEL)
+                    channel = self.context.get_global_key(
+                        GlobalKeys.DELAY_PUBSUB_CHANNEL
+                    )
                     await pubsub.subscribe(channel)
-                    self.context._logger.info(f"开始监听延时任务通知, channel={channel}")
+                    logger.info(f"开始监听延时任务通知, channel={channel}")
                     retry_delay = 1  # 重置重试延迟
                     consecutive_failures = 0  # 重置失败计数
 
@@ -192,24 +255,26 @@ class ScheduleService:
                             await self.context.redis.ping()
                             last_ping = current_time
                         except Exception as ping_error:
-                            self.context.log_error("Redis连接检查失败", ping_error)
+                            logger.exception("Redis连接检查失败")
                             raise ping_error
 
                     if message["type"] == "message":
                         try:
                             notified_time = int(message["data"])
-                            self.context._logger.debug(f"收到延时任务通知: {notified_time}")
-                            
+                            logger.debug(f"收到延时任务通知: {notified_time}")
+
                             # --- 核心改变：只设置事件，不处理任何复杂逻辑 ---
                             self.notification_event.set()
 
                         except Exception as e:
-                            self.context.log_error("处理延时通知错误", e)
+                            logger.exception("处理延时通知错误")
 
             except Exception as e:
                 consecutive_failures += 1
-                self.context.log_error("Pubsub监听器错误", e, consecutive_failures=consecutive_failures)
-                
+                logger.exception(
+                    f"Pubsub监听器错误, consecutive_failures={consecutive_failures}"
+                )
+
                 # 清理损坏的连接
                 if pubsub:
                     try:
@@ -217,72 +282,68 @@ class ScheduleService:
                     except Exception:
                         pass
                     pubsub = None
-                
+
                 # 如果系统正在关闭，直接退出
                 if not self.is_running:
                     break
-                
+
                 # 如果连续失败次数过多，增加等待时间
                 if consecutive_failures >= max_consecutive_failures:
                     retry_delay = min(retry_delay * 2, 60)
-                    self.context._logger.warning(f"Pubsub连续失败过多，延长重连间隔, consecutive_failures={consecutive_failures}, retry_delay={retry_delay}")
+                    logger.warning(
+                        f"Pubsub连续失败过多，延长重连间隔, consecutive_failures={consecutive_failures}, retry_delay={retry_delay}"
+                    )
                 else:
                     # 快速重连
                     retry_delay = min(retry_delay * 1.5, 10)
-                
-                self.context._logger.warning(f"Pubsub连接断开，等待重连, retry_delay={retry_delay}, consecutive_failures={consecutive_failures}")
-                await asyncio.sleep(retry_delay)
-        
+
+                logger.warning(
+                    f"Pubsub连接断开，等待重连, retry_delay={retry_delay}, consecutive_failures={consecutive_failures}"
+                )
+
+                # 将长时间等待分解为小段，每0.1秒检查一次停止状态
+                remaining_delay = retry_delay
+                while remaining_delay > 0 and self.is_running:
+                    sleep_time = min(0.1, remaining_delay)
+                    await asyncio.sleep(sleep_time)
+                    remaining_delay -= sleep_time
+
         # 确保资源清理
         if pubsub:
             try:
                 await pubsub.close()
-                self.context._logger.info("Pubsub连接已关闭")
+                logger.info("Pubsub连接已关闭")
             except Exception as e:
-                self.context.log_error("关闭Pubsub连接失败", e)
+                logger.exception("关闭Pubsub连接失败")
+
+        logger.info("pubsub_listener close!")
 
     async def periodic_fallback(self) -> None:
         """定期兜底检查，防止pubsub消息丢失"""
         while self.is_running:
             await asyncio.sleep(self.context.config.delay_fallback_interval)
             try:
-                self.context._logger.debug("执行兜底检查，触发一次调度评估")
+                logger.debug("执行兜底检查，触发一次调度评估")
                 # 同样，只是简单地设置事件
                 self.notification_event.set()
             except Exception as e:
-                self.context.log_error("兜底检查错误", e)
+                logger.exception("兜底检查执行失败")
+        logger.info("periodic_fallback close!")
 
     async def try_process_expired_tasks(self) -> None:
-        """
-        尝试处理过期任务 - 逻辑已简化。
-        这个函数现在只负责处理任务，不再关心后续的调度。
-        """
+        """尝试处理过期任务"""
         try:
-            self.context._logger.info("开始处理过期延时任务")
-            
             lua_script: AsyncScript = self.context.lua_scripts["process_delay"]
-            results = await lua_script(
-                keys=[
-                    self.context.get_global_key(GlobalKeys.DELAY_TASKS),
-                    self.context.get_global_key(GlobalKeys.PAYLOAD_MAP),
-                ],
-                args=[self.context.config.batch_size],
+            delay_tasks_key = self.context.get_global_key(GlobalKeys.DELAY_TASKS)
+            payload_map_key = self.context.get_global_key(GlobalKeys.PAYLOAD_MAP)
+            batch_size = str(self.context.config.batch_size)  # Lua脚本要求字符串参数
+            result = await lua_script(
+                keys=[delay_tasks_key, payload_map_key], args=[batch_size]
             )
-
-            results_count = len(results) if results else 0
-            self.context._logger.info(f"处理延时任务完成, count={results_count}")
-            
-            if results_count > 0:
-                self.context._logger.debug(f"处理的任务详情: {results}")
-                for task_id, queue_name in results:
-                    self.context.log_debug("延时消息已就绪", task_id=task_id, queue_name=queue_name)
-            else:
-                self.context._logger.debug("本次检查没有发现到期的延时任务")
-
+            if result:
+                logger.info(f"处理延时任务成功, result={result}")
         except Exception as e:
-            self.context.log_error("处理过期任务失败", e)
-        
-        # 注意：这里的 finally 块中不再有任何调度逻辑，因为主循环会自动处理！
+            logger.exception("处理延时任务失败")
 
     async def monitor_expired_messages(self) -> None:
         """监控过期消息"""
@@ -292,6 +353,7 @@ class ScheduleService:
 
                 lua_script: AsyncScript = self.context.lua_scripts["handle_timeout"]
                 expired_results = await lua_script(
+                    # 这里 keys 都是 redis 中的键名称
                     keys=[
                         self.context.get_global_key(GlobalKeys.EXPIRE_MONITOR),
                         self.context.get_global_key(GlobalKeys.PAYLOAD_MAP),
@@ -307,14 +369,14 @@ class ScheduleService:
                             message, queue_name
                         )
 
-                        self.context.log_info(
-                            "过期消息处理", message_id=msg_id, queue_name=queue_name, expire_reason="timeout"
+                        logger.info(
+                            f"过期消息处理, message_id={msg_id}, queue_name={queue_name}, expire_reason=timeout"
                         )
                     except Exception as e:
-                        self.context.log_error("处理过期消息失败", e, message_id=msg_id)
+                        logger.exception(f"处理过期消息失败, message_id={msg_id}")
 
             except Exception as e:
-                self.context.log_error("过期消息监控错误", e)
+                logger.exception("过期消息监控错误")
 
             await asyncio.sleep(self.context.config.expired_check_interval)
 
@@ -329,12 +391,12 @@ class ScheduleService:
                 await asyncio.sleep(self.context.config.processing_monitor_interval)
 
             except Exception as e:
-                self.context.log_error("Processing队列监控错误", e)
+                logger.exception("Processing队列监控错误")
                 await asyncio.sleep(30)
 
     async def _monitor_single_topic(self, topic: str) -> None:
         """监控单个主题的processing队列"""
-        processing_key = self.context.get_topic_key(topic, TopicKeys.PROCESSING)
+        processing_key = self.context.get_global_topic_key(topic, TopicKeys.PROCESSING)
 
         # 获取processing队列中的所有消息
         processing_ids = await self.context.redis.lrange(processing_key, 0, -1)  # type: ignore
@@ -386,7 +448,9 @@ class ScheduleService:
         tracker: dict[str, int],
     ) -> None:
         """处理卡死的消息列表"""
-        self.context._logger.warning(f"发现卡死消息, topic={topic}, count={len(stuck_messages)}, stuck_messages={stuck_messages}")
+        logger.warning(
+            f"发现卡死消息, topic={topic}, count={len(stuck_messages)}, stuck_messages={stuck_messages}"
+        )
 
         for msg_id in stuck_messages:
             try:
@@ -396,8 +460,8 @@ class ScheduleService:
                 if msg_id in tracker:
                     del tracker[msg_id]
             except Exception as e:
-                self.context.log_error(
-                    "处理卡死消息失败", e, message_id=msg_id, topic=topic
+                logger.exception(
+                    f"处理卡死消息失败, message_id={msg_id}, topic={topic}"
                 )
 
     async def system_monitor(self) -> None:
@@ -407,12 +471,12 @@ class ScheduleService:
                 metrics = await self._collect_metrics()
 
                 for metric_name, value in metrics.items():
-                    self.context.log_metric(metric_name, value)
+                    logger.debug(f"metric: {metric_name}={value}")
 
                 await self._check_alerts(metrics)
 
             except Exception as e:
-                self.context.log_error("系统监控错误", e)
+                logger.exception("系统监控错误")
 
             await asyncio.sleep(self.context.config.monitor_interval)
 
@@ -427,10 +491,10 @@ class ScheduleService:
             topic_processing = {}
             for topic in self.context.handlers.keys():
                 topic_pending[topic] = pipe.llen(
-                    self.context.get_topic_key(topic, TopicKeys.PENDING)
+                    self.context.get_global_topic_key(topic, TopicKeys.PENDING)
                 )
                 topic_processing[topic] = pipe.llen(
-                    self.context.get_topic_key(topic, TopicKeys.PROCESSING)
+                    self.context.get_global_topic_key(topic, TopicKeys.PROCESSING)
                 )
 
             pipe.zcard(self.context.get_global_key(GlobalKeys.DELAY_TASKS))
@@ -457,7 +521,7 @@ class ScheduleService:
             metrics[f"{GlobalKeys.DLQ_QUEUE.value}.count"] = results[result_idx]
 
         except Exception as e:
-            self.context.log_error("收集指标失败", e)
+            logger.exception("收集指标失败")
 
         return metrics
 
@@ -467,6 +531,8 @@ class ScheduleService:
             for topic in self.context.handlers.keys():
                 processing_count = metrics.get(f"{topic}.processing", 0)
                 if processing_count > self.context.config.max_workers * 2:
-                    self.context._logger.warning(f"Processing队列过长, topic={topic}, count={processing_count}, threshold={self.context.config.max_workers * 2}")
+                    logger.warning(
+                        f"Processing队列过长, topic={topic}, count={processing_count}, threshold={self.context.config.max_workers * 2}"
+                    )
         except Exception as e:
-            self.context.log_error("告警检查失败", e)
+            logger.exception("告警检查失败")

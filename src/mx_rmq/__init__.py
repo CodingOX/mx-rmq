@@ -6,7 +6,12 @@ MX-RMQ: 基于Redis的高性能异步消息队列
 from .config import MQConfig
 from .constants import GlobalKeys, TopicKeys, KeyNamespace
 from .core import QueueContext
-from .logging import LoggerService, setup_colored_logging, setup_simple_colored_logging
+from .log_config import (
+    setup_logger,
+    setup_simple_logger,
+    setup_production_logger,
+    configure_mx_rmq_logging,
+)
 from .message import Message, MessageMeta, MessagePriority, MessageStatus
 from .monitoring import MetricsCollector, QueueMetrics, ProcessingMetrics
 from .queue import RedisMessageQueue
@@ -21,15 +26,15 @@ __all__ = [
     "MessagePriority",
     "MessageStatus",
     "MessageMeta",
+    # 日志配置
+    "setup_logger",
+    "setup_simple_logger",
+    "setup_production_logger",
+    "configure_mx_rmq_logging",
     # Redis键名常量
     "GlobalKeys",
     "TopicKeys",
     "KeyNamespace",
-    # 向后兼容的日志服务
-    "LoggerService",
-    # 彩色日志配置
-    "setup_colored_logging",
-    "setup_simple_colored_logging",
     # 监控相关
     "MetricsCollector",
     "QueueMetrics",

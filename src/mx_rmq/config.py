@@ -13,16 +13,17 @@ class MQConfig(BaseModel):
     model_config = {"frozen": True}  # 配置对象不可变
 
     # Redis连接配置
-    redis_host: str = Field(default="redis://localhost:6379", description="Redis连接URL")
+    redis_host: str = Field(default="localhost", description="Redis主机")
+    redis_port: int = Field(default=6379, description="Redis端口")
     redis_db: int = Field(default=0, ge=0, le=15, description="Redis数据库编号")
     redis_password: str | None = Field(default=None, description="Redis密码")
-
-    # 队列前缀配置
-    queue_prefix: str = Field(default="", description="队列前缀，用于逻辑隔离")
-
-    connection_pool_size: int = Field(
+    redis_ssl: bool = Field(default=False, description="是否使用SSL连接")
+    redis_max_connections: int = Field(
         default=20, ge=5, le=100, description="Redis连接池大小"
     )
+
+    # 队列前缀配置,业务隔离
+    queue_prefix: str = Field(default="", description="队列前缀，用于逻辑隔离")
 
     # 消费者配置
     max_workers: int = Field(default=5, ge=1, le=50, description="最大工作协程数")
@@ -66,6 +67,14 @@ class MQConfig(BaseModel):
 
     # 日志配置
     log_level: str = Field(default="INFO", description="日志级别")
+
+    # 错误队列配置
+    parse_error_ttl_days: int = Field(
+        default=3, ge=1, le=30, description="解析错误数据保留天数"
+    )
+    parse_error_max_count: int = Field(
+        default=10000, ge=100, le=100000, description="解析错误队列最大记录数"
+    )
 
     # 新增处理器超时配置
     handler_timeout: float = Field(

@@ -11,7 +11,7 @@ import redis.asyncio as aioredis
 from pydantic import BaseModel, Field
 
 from ..constants import GlobalKeys, TopicKeys
-import logging
+from loguru import logger
 
 
 class QueueMetrics(BaseModel):
@@ -53,7 +53,6 @@ class MetricsCollector:
         self.redis = redis
         self.queue_prefix = queue_prefix
         self._lock = Lock()
-        self._logger = logging.getLogger(__name__)
 
         # 队列计数器
         self._queue_counters: defaultdict[str, dict[str, int]] = defaultdict(
@@ -270,11 +269,15 @@ class MetricsCollector:
         Returns:
             主题到队列指标的映射
         """
+        # 先获取所有主题的副本，避免在遍历时持有锁
         with self._lock:
-            return {
-                topic: self.get_queue_metrics(topic)
-                for topic in self._queue_counters.keys()
-            }
+            topics = list(self._queue_counters.keys())
+        
+        # 对每个主题单独获取指标，避免嵌套锁
+        return {
+            topic: self.get_queue_metrics(topic)
+            for topic in topics
+        }
 
     def get_all_processing_metrics(self) -> dict[str, ProcessingMetrics]:
         """
@@ -283,11 +286,15 @@ class MetricsCollector:
         Returns:
             主题到处理指标的映射
         """
+        # 先获取所有主题的副本，避免在遍历时持有锁
         with self._lock:
-            return {
-                topic: self.get_processing_metrics(topic)
-                for topic in self._processing_counters.keys()
-            }
+            topics = list(self._processing_counters.keys())
+        
+        # 对每个主题单独获取指标，避免嵌套锁
+        return {
+            topic: self.get_processing_metrics(topic)
+            for topic in topics
+        }
 
     def reset_metrics(self) -> None:
         """重置所有指标"""
@@ -327,7 +334,9 @@ class MetricsCollector:
                 metrics[f"queue.{topic}.total"] = pending_count + processing_count
 
             # 延时队列指标
-            delay_count = await self.redis.zcard(self._get_global_key(GlobalKeys.DELAY_TASKS))  # type: ignore
+            delay_count = await self.redis.zcard(
+                self._get_global_key(GlobalKeys.DELAY_TASKS)
+            )  # type: ignore
             metrics["delay_tasks.count"] = delay_count
 
             # 过期监控指标
@@ -337,11 +346,15 @@ class MetricsCollector:
             metrics["expire_monitor.count"] = expire_count
 
             # 消息存储指标
-            payload_count = await self.redis.hlen(self._get_global_key(GlobalKeys.PAYLOAD_MAP))  # type: ignore
+            payload_count = await self.redis.hlen(
+                self._get_global_key(GlobalKeys.PAYLOAD_MAP)
+            )  # type: ignore
             metrics["payload_map.count"] = payload_count
 
             # 死信队列指标
-            dlq_count = await self.redis.llen(self._get_global_key(GlobalKeys.DLQ_QUEUE))  # type: ignore
+            dlq_count = await self.redis.llen(
+                self._get_global_key(GlobalKeys.DLQ_QUEUE)
+            )  # type: ignore
             dlq_payload_count = await self.redis.hlen(
                 self._get_global_key(GlobalKeys.DLQ_PAYLOAD_MAP)
             )  # type: ignore
@@ -349,7 +362,7 @@ class MetricsCollector:
             metrics["dlq_payload_map.count"] = dlq_payload_count
 
         except Exception as e:
-            self._logger.error("收集队列指标失败", e)
+            logger.error(f"收集队列指标失败: {e}")
 
         return metrics
 
@@ -410,7 +423,7 @@ class MetricsCollector:
                     metrics[f"processing.{topic}.stuck_count"] = 0
 
         except Exception as e:
-            self._logger.error("收集处理指标失败", e)
+            logger.error(f"收集处理指标失败: {e}")
 
         return metrics
 
@@ -471,7 +484,7 @@ class MetricsCollector:
                 metrics["delay.min_remaining"] = 0
 
         except Exception as e:
-            self._logger.error("收集延时指标失败", e)
+            logger.error(f"收集延时指标失败: {e}")
 
         return metrics
 
@@ -492,7 +505,9 @@ class MetricsCollector:
 
         try:
             # 死信队列统计
-            dlq_messages = await self.redis.lrange(self._get_global_key(GlobalKeys.DLQ_QUEUE), 0, -1)  # type: ignore
+            dlq_messages = await self.redis.lrange(
+                self._get_global_key(GlobalKeys.DLQ_QUEUE), 0, -1
+            )  # type: ignore
 
             # 按topic统计死信消息
             topic_error_counts = dict.fromkeys(topics, 0)
@@ -511,7 +526,7 @@ class MetricsCollector:
             metrics["error.total_dlq"] = len(dlq_messages)
 
         except Exception as e:
-            self._logger.error("收集错误指标失败", e)
+            logger.error(f"收集错误指标失败: {e}")
 
         return metrics
 
@@ -566,7 +581,7 @@ class MetricsCollector:
                 metrics["throughput.messages_per_minute"] = 0
 
         except Exception as e:
-            self._logger.error("收集吞吐率指标失败", e)
+            logger.error(f"收集吞吐率指标失败: {e}")
 
         return metrics
 
@@ -606,7 +621,7 @@ class MetricsCollector:
             return all_metrics
 
         except Exception as e:
-            self._logger.error("收集所有指标失败", e)
+            logger.error(f"收集所有指标失败: {e}")
             return {"timestamp": int(time.time() * 1000)}
 
     def _save_to_history(self, metrics: dict[str, Any]) -> None:
@@ -624,7 +639,7 @@ class MetricsCollector:
                 self.metrics_history.pop(0)
 
         except Exception as e:
-            self._logger.error("保存指标历史失败", e)
+            logger.error(f"保存指标历史失败: {e}")
 
     def get_metrics_history(self, last_n: int = 100) -> list[dict[str, Any]]:
         """
@@ -641,4 +656,4 @@ class MetricsCollector:
     def clear_history(self) -> None:
         """清空历史记录"""
         self.metrics_history.clear()
-        self._logger.info("指标历史记录已清空")
+        logger.info("指标历史记录已清空")

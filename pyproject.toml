@@ -1,9 +1,9 @@
 [project]
 name = "mx-rmq"
-version = "1.4.0"
+version = "1.6.0"
 description = "基于Redis的异步消息队列系统"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 authors = [
     {name = "Alistar Max", email = "codingox@gmail.com"}
 ]
@@ -14,42 +14,28 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License", 
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.10",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: System :: Distributed Computing",
 ]
 
 dependencies = [
-    "redis[hiredis]>=6.0.0",
-    "pydantic>=2.0.0",
-    # 日志库改为可选依赖，使用门面模式支持多种后端
+    "redis[hiredis]>=6.2.0",
+    "pydantic>=2.11.7",
+    "loguru>=0.7.3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0", 
-    "pytest-cov>=4.0.0",
-    "black>=23.0.0",
-    "ruff>=0.1.0",
-    "mypy>=1.5.0",
+    "pytest>=8.4.1",
+    "pytest-asyncio>=1.1.0", 
+    "pytest-cov>=6.2.1",
+    "black>=25.1.0",
+    "ruff>=0.12.7",
+    "mypy>=1.17.1",
 ]
-docs = [
-    "sphinx>=7.0.0",
-    "sphinx-rtd-theme>=1.3.0",
-]
-# 日志后端可选依赖
-loguru = [
-    "loguru>=0.7.0",
-]
-structlog = [
-    "structlog>=23.1.0",
-]
-# 包含所有日志后端的完整安装
-logging-all = [
-    "loguru>=0.7.0",
-    "structlog>=23.1.0",
-]
+
+
 
 [project.urls]
 Homepage = "https://github.com/CodingOX/mx-rmq"
@@ -150,7 +136,13 @@ strict_equality = true
 minversion = "7.0"
 addopts = "-ra -q --strict-markers --strict-config"
 testpaths = ["tests"]
-asyncio_mode = "auto"
+markers = [
+    "asyncio: 标记异步测试",
+    "slow: 标记运行时间较长的测试",
+    "integration: 标记集成测试",
+    "redis_v8: 标记需要Redis 8.x的测试", 
+    "redis_v6: 标记需要Redis 6.x的测试"
+]
 
 [tool.coverage.run]
 source = ["src"]
@@ -172,8 +164,11 @@ index-url = "https://mirrors.tencent.com/pypi/simple"
 
 [dependency-groups]
 dev = [
-    "build>=1.2.2.post1",
-    "loguru>=0.7.3",
-    "ruff>=0.12.2",
+    "build>=1.3.0",
+    "pytest-asyncio>=1.1.0",
+    "pytest-cov>=6.2.1",
+    "pytest-mock>=3.14.1",
+    "pytest-timeout>=2.4.0",
+    "ruff>=0.12.7",
     "twine>=6.1.0",
 ]

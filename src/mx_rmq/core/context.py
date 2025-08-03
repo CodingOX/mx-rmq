@@ -11,7 +11,6 @@ from redis.commands.core import AsyncScript
 
 from ..config import MQConfig
 from ..constants import GlobalKeys, TopicKeys
-import logging
 
 
 class QueueContext:
@@ -21,7 +20,6 @@ class QueueContext:
         self,
         config: MQConfig,
         redis: aioredis.Redis,
-        logger: logging.Logger,
         lua_scripts: dict[str, AsyncScript],
     ) -> None:
         """
@@ -30,12 +28,10 @@ class QueueContext:
         Args:
             config: 消息队列配置
             redis: Redis 连接
-            logger: 日志器
             lua_scripts: Lua 脚本字典
         """
         self.config = config
         self.redis = redis
-        self._logger = logger
         self.lua_scripts = lua_scripts
 
         # 消息处理器
@@ -53,11 +49,6 @@ class QueueContext:
         self.active_tasks: set[asyncio.Task] = set()
         self.shutdown_event = asyncio.Event()
 
-    # 便捷属性，直接访问logger
-    @property
-    def logger(self):
-        """获取logger，保持向后兼容"""
-        return self._logger
 
     def is_running(self) -> bool:
         """检查是否正在运行"""
@@ -71,44 +62,30 @@ class QueueContext:
             topic: 主题名称
             handler: 处理函数
         """
+        from loguru import logger
+
         if not callable(handler):
             raise ValueError("处理器必须是可调用对象")
 
         self.handlers[topic] = handler
-        self._logger.info(
-            f"消息处理器注册成功, topic={topic}, handler={handler.__name__}"
-        )
+        logger.info(f"消息处理器注册成功, topic={topic}, handler={handler.__name__}")
 
-    def log_error(self, message: str, error: Exception, **kwargs) -> None:
-        """记录错误日志"""
-        extra_info = f", {', '.join(f'{k}={v}' for k, v in kwargs.items())}" if kwargs else ""
-        self._logger.error(f"{message} {extra_info}", exc_info=error)
-
-    def log_info(self, message: str, **kwargs: Any) -> None:
-        """记录消息事件"""
-        extra_info = f", {', '.join(f'{k}={v}' for k, v in kwargs.items())}" if kwargs else ""
-        self._logger.info(f"{message} {extra_info}")
-
-    def log_debug(self, message: str, **kwargs: Any) -> None:
-        """记录调试信息"""
-        extra_info = f", {', '.join(f'{k}={v}' for k, v in kwargs.items())}" if kwargs else ""
-        self._logger.debug(f"{message} {extra_info}")
-
-    def get_global_key(self, key: GlobalKeys) -> str:
+    def get_global_key(self, key: GlobalKeys | str) -> str:
         """
         获取全局键名，自动添加队列前缀
 
         Args:
-            key: 全局键名枚举
+            key: 全局键名枚举或字符串
 
         Returns:
             带前缀的键名
         """
+        key_value = key.value if isinstance(key, GlobalKeys) else key
         if self.config.queue_prefix:
-            return f"{self.config.queue_prefix}:{key.value}"
-        return key.value
+            return f"{self.config.queue_prefix}:{key_value}"
+        return key_value
 
-    def get_topic_key(self, topic: str, suffix: TopicKeys) -> str:
+    def get_global_topic_key(self, topic: str, suffix: TopicKeys) -> str:
         """
         获取主题相关键名，自动添加队列前缀
 
@@ -119,11 +96,7 @@ class QueueContext:
         Returns:
             带前缀的主题键名
         """
+
         if self.config.queue_prefix:
             return f"{self.config.queue_prefix}:{topic}:{suffix.value}"
         return f"{topic}:{suffix.value}"
-
-    def log_metric(self, metric_name: str, value: Any, **kwargs) -> None:
-        """记录指标"""
-        extra_info = f", {', '.join(f'{k}={v}' for k, v in kwargs.items())}" if kwargs else ""
-        self._logger.debug(f"metric: {metric_name}={value}{extra_info}")

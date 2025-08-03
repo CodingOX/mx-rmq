@@ -1,147 +1,139 @@
-"""pytest配置文件"""
+"""
+pytest配置文件和共享fixtures
+"""
 
 import asyncio
-import time
-from unittest.mock import AsyncMock
-
 import pytest
+# import pytest_asyncio
+import redis.asyncio as aioredis
+from typing import AsyncGenerator
 
 from mx_rmq.config import MQConfig
-from mx_rmq.message import Message, MessageMeta, MessagePriority, MessageStatus
+
+
+# Redis测试配置
+TEST_REDIS_CONFIGS = {
+    "redis_v8": {
+        "host": "localhost",
+        "port": 6378,
+        "db": 1,  # 使用独立测试数据库
+        "decode_responses": True
+    },
+    "redis_v6": {
+        "host": "localhost",
+        "port": 6376,
+        "db": 1,
+        "decode_responses": True
+    }
+}
 
 
 @pytest.fixture(scope="session")
 def event_loop():
-    """创建事件循环用于异步测试"""
-    loop = asyncio.new_event_loop()
+    """创建事件循环用于整个测试会话"""
+    policy = asyncio.get_event_loop_policy()
+    loop = policy.new_event_loop()
     yield loop
     loop.close()
 
 
+@pytest.fixture(scope="session")
+async def redis_v8_client() -> AsyncGenerator[aioredis.Redis, None]:
+    """Redis 8.x 测试客户端"""
+    client = aioredis.Redis(**TEST_REDIS_CONFIGS["redis_v8"])
+    try:
+        # 测试连接
+        await client.ping()
+        yield client
+    finally:
+        # 清理测试数据
+        await client.flushdb()
+        await client.aclose()
+
+
+@pytest.fixture(scope="session")
+async def redis_v6_client() -> AsyncGenerator[aioredis.Redis, None]:
+    """Redis 6.x 测试客户端"""
+    client = aioredis.Redis(**TEST_REDIS_CONFIGS["redis_v6"])
+    try:
+        # 测试连接
+        await client.ping()
+        yield client
+    finally:
+        # 清理测试数据
+        await client.flushdb()
+        await client.aclose()
+
+
 @pytest.fixture
-def test_config():
-    """测试用配置"""
+def test_config_v8() -> MQConfig:
+    """Redis 8.x 测试配置"""
     return MQConfig(
-        redis_host="redis://localhost:6379",
-        redis_db=15,  # 使用测试数据库
-        max_workers=2,
-        task_queue_size=5,
-        message_ttl=3600,
-        processing_timeout=60,
-        max_retries=2,
-        retry_delays=[10, 30],
-        monitor_interval=5,
-        log_level="DEBUG",
-    )
-
-
-@pytest.fixture
-def sample_message():
-    """示例消息"""
-    return Message(
-        topic="test.topic",
-        payload={"user_id": 123, "action": "test"},
-        priority=MessagePriority.NORMAL,
-    )
-
-
-@pytest.fixture
-def sample_message_meta():
-    """示例消息元数据"""
-    return MessageMeta(
-        expire_at=int(time.time() * 1000) + 3600000,
+        redis_host=TEST_REDIS_CONFIGS["redis_v8"]["host"],
+        redis_port=TEST_REDIS_CONFIGS["redis_v8"]["port"],
+        redis_db=TEST_REDIS_CONFIGS["redis_v8"]["db"],
+        queue_prefix="test_mq",
         max_retries=3,
-        retry_delays=[60, 300, 1800],
+        batch_size=10
     )
 
 
 @pytest.fixture
-def mock_redis():
-    """模拟Redis连接"""
-    redis_mock = AsyncMock()
-
-    # 设置常用的返回值
-    redis_mock.ping.return_value = True
-    redis_mock.eval.return_value = None
-    redis_mock.hget.return_value = None
-    redis_mock.hgetall.return_value = {}
-    redis_mock.llen.return_value = 0
-    redis_mock.lrange.return_value = []
-    redis_mock.zcard.return_value = 0
-    redis_mock.zrange.return_value = []
-    redis_mock.info.return_value = {"redis_version": "6.0.0"}
-    redis_mock.close.return_value = None
-
-    return redis_mock
-
-
-@pytest.fixture
-def mock_lua_scripts():
-    """模拟Lua脚本返回值"""
-    return {
-        "produce_normal": "msg-123",
-        "produce_delay": "delay-msg-456",
-        "complete_message": 1,
-        "retry_message": 1,
-        "move_to_dlq": 1,
-        "process_delay_messages": 0,
-        "handle_timeout_messages": 0,
-    }
-
-
-@pytest.fixture
-def sample_messages():
-    """多个示例消息"""
-    messages = []
-    for i in range(5):
-        message = Message(
-            topic=f"test.topic.{i}",
-            payload={"index": i, "data": f"test-{i}"},
-            priority=MessagePriority.NORMAL if i % 2 == 0 else MessagePriority.HIGH,
-        )
-        messages.append(message)
-    return messages
-
-
-@pytest.fixture
-def message_with_retry():
-    """带重试信息的消息"""
-    message = Message(topic="retry.test", payload={"retry": True})
-    # 模拟已重试的状态
-    message.mark_retry("Test error")
-    return message
-
-
-@pytest.fixture
-def expired_message():
-    """过期消息"""
-    expired_meta = MessageMeta(
-        expire_at=int(time.time() * 1000) - 3600000,  # 1小时前过期
+def test_config_v6() -> MQConfig:
+    """Redis 6.x 测试配置"""
+    return MQConfig(
+        redis_host=TEST_REDIS_CONFIGS["redis_v6"]["host"],
+        redis_port=TEST_REDIS_CONFIGS["redis_v6"]["port"],
+        redis_db=TEST_REDIS_CONFIGS["redis_v6"]["db"],
+        queue_prefix="test_mq",
         max_retries=3,
+        batch_size=10
     )
-    return Message(topic="expired.test", payload={"expired": True}, meta=expired_meta)
 
 
+@pytest.fixture
+async def clean_redis_v8(redis_v8_client: aioredis.Redis) -> AsyncGenerator[aioredis.Redis, None]:
+    """每个测试前后清理Redis 8.x数据"""
+    await redis_v8_client.flushdb()
+    yield redis_v8_client
+    await redis_v8_client.flushdb()
+
+
+@pytest.fixture
+async def clean_redis_v6(redis_v6_client: aioredis.Redis) -> AsyncGenerator[aioredis.Redis, None]:
+    """每个测试前后清理Redis 6.x数据"""
+    await redis_v6_client.flushdb()
+    yield redis_v6_client
+    await redis_v6_client.flushdb()
+
+
+# pytest配置
 def pytest_configure(config):
     """pytest配置"""
-    # 添加自定义标记
-    config.addinivalue_line("markers", "asyncio: 标记异步测试函数")
-    config.addinivalue_line("markers", "integration: 标记集成测试")
-    config.addinivalue_line("markers", "unit: 标记单元测试")
-    config.addinivalue_line("markers", "slow: 标记慢速测试")
+    config.addinivalue_line(
+        "markers", "slow: 标记运行时间较长的测试"
+    )
+    config.addinivalue_line(
+        "markers", "integration: 标记集成测试"
+    )
+    config.addinivalue_line(
+        "markers", "redis_v8: 标记需要Redis 8.x的测试"
+    )
+    config.addinivalue_line(
+        "markers", "redis_v6: 标记需要Redis 6.x的测试"
+    )
+    config.addinivalue_line(
+        "markers", "real_redis: 标记需要真实Redis环境的测试"
+    )
 
 
 def pytest_collection_modifyitems(config, items):
-    """修改测试项配置"""
-    # 为异步测试添加asyncio标记
+    """修改测试收集项"""
     for item in items:
-        if asyncio.iscoroutinefunction(item.function):
-            item.add_marker(pytest.mark.asyncio)
-
-
-@pytest.fixture(autouse=True)
-def cleanup_after_test():
-    """测试后自动清理"""
-    yield
-    # 清理逻辑可以在这里添加
-    pass
+        # 为慢速测试添加超时
+        if item.get_closest_marker("slow"):
+            item.add_marker(pytest.mark.timeout(30))
+        
+        # 为集成测试添加超时
+        if item.get_closest_marker("integration"):
+            item.add_marker(pytest.mark.timeout(60))

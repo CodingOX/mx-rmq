@@ -10,22 +10,22 @@ class GlobalKeys(str, Enum):
     """全局Redis键名枚举 - 适用于整个系统的全局数据结构"""
 
     # 消息存储相关
-    PAYLOAD_MAP = "payload:map"  # Hash: 存储消息内容和队列映射
+    PAYLOAD_MAP = "payloads"  # Hash: 存储消息内容和队列映射
 
     # 过期监控相关
-    EXPIRE_MONITOR = "expire:monitor"  # ZSet: 全局过期任务监控
+    EXPIRE_MONITOR = "expires"  # ZSet: 全局过期任务监控
 
     # 延时任务相关
-    DELAY_TASKS = "delay:tasks"  # ZSet: 全局延时任务队列
-    DELAY_PUBSUB_CHANNEL = "delay:wakeup"  # PubSub: 延时任务唤醒通道
+    DELAY_TASKS = "delays"  # ZSet: 全局延时任务队列
+    DELAY_PUBSUB_CHANNEL = "delay:wake"  # PubSub: 延时任务唤醒通道
 
     # 死信队列相关
-    DLQ_QUEUE = "dlq:queue"  # List: 死信队列
-    DLQ_PAYLOAD_MAP = "dlq:payload:map"  # Hash: 死信队列消息存储
+    DLQ_QUEUE = "dlq"  # List: 死信队列
+    DLQ_PAYLOAD_MAP = "dlq:data"  # Hash: 死信队列消息存储
 
     # 解析错误存储相关
-    PARSE_ERROR_QUEUE = "error:parse:queue"  # List: 解析错误消息队列
-    PARSE_ERROR_PAYLOAD_MAP = "error:parse:payload:map"  # Hash: 解析错误信息存储
+    PARSE_ERROR_QUEUE = "errors"  # List: 解析错误消息队列
+    PARSE_ERROR_PAYLOAD_MAP = "errors:data"  # Hash: 解析错误信息存储
 
     # 监控指标相关
     METRICS = "metrics"  # Hash: 系统监控指标
@@ -77,6 +77,8 @@ class KeyNamespace:
             GlobalKeys.DELAY_PUBSUB_CHANNEL: "延时任务唤醒通知PubSub通道",
             GlobalKeys.DLQ_QUEUE: "死信队列List",
             GlobalKeys.DLQ_PAYLOAD_MAP: "死信队列消息存储Hash",
+            GlobalKeys.PARSE_ERROR_QUEUE: "解析错误消息队列List",
+            GlobalKeys.PARSE_ERROR_PAYLOAD_MAP: "解析错误信息存储Hash",
             GlobalKeys.METRICS: "系统监控指标Hash",
         }
         return descriptions.get(key_type, f"全局键: {key_type.value}")

@@ -8,23 +8,20 @@ from pathlib import Path
 
 import redis.asyncio as aioredis
 from redis.commands.core import AsyncScript
-
-import logging
+from loguru import logger
 
 
 class LuaScriptManager:
     """Lua脚本管理器"""
 
-    def __init__(self, redis: aioredis.Redis, logger: logging.Logger) -> None:
+    def __init__(self, redis: aioredis.Redis) -> None:
         """
         初始化脚本管理器
 
         Args:
             redis: Redis连接实例
-            logger: 日志器实例
         """
         self.redis = redis
-        self.logger = logger
 
     async def load_scripts(self) -> dict[str, AsyncScript]:
         """
@@ -51,7 +48,7 @@ class LuaScriptManager:
             # 注册脚本到Redis
             lua_scripts[script_name] = self.redis.register_script(script_content)
 
-        self.logger.info(f"Lua脚本加载完成, count={len(lua_scripts)}")
+        logger.info(f"Lua脚本加载完成, count={len(lua_scripts)}")
         return lua_scripts
 
     async def _load_script_content(self, filename: str) -> str:
@@ -107,7 +104,7 @@ class LuaScriptManager:
                 script_path = script_dir / filename
 
                 if script_path.exists():
-                    self.logger.warning(
+                    logger.warning(
                         f"使用开发环境回退路径加载Lua脚本, script={filename}, path={str(script_path)}"
                     )
                     with open(script_path, encoding="utf-8") as f:
