@@ -76,7 +76,7 @@ class TestRedisMessageQueue:
         queue = RedisMessageQueue()
         
         # 无效处理器
-        with pytest.raises(ValueError, match="处理器必须是可调用对象"):
+        with pytest.raises(TypeError, match="处理器必须是可调用对象"):
             queue.register_handler("test_topic", "not_callable") # type: ignore
 
     @pytest.mark.asyncio

@@ -39,7 +39,7 @@ class DispatchService:
     async def dispatch_messages(self, topic: str) -> None:
         """消息分发协程
         该行为无法使用 lua 因为 blmove 阻塞的。
-        所以原子性无法保障
+        所以原子性无法保障，需要监控 processing 兜底
         """
         topic_pending_key = self.context.get_global_topic_key(topic, TopicKeys.PENDING)
         topic_processing_key = self.context.get_global_topic_key(

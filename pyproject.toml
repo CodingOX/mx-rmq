@@ -1,6 +1,6 @@
 [project]
 name = "mx-rmq"
-version = "1.6.0"
+version = "1.6.2"
 description = "基于Redis的异步消息队列系统"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,7 +20,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "redis[hiredis]>=6.2.0",
+    "redis[hiredis]>=6.3.0",
     "pydantic>=2.11.7",
     "loguru>=0.7.3",
 ]
@@ -91,6 +91,69 @@ exclude = [
     ".tox/**",
     ".mypy_cache/**",
     ".ruff_cache/**",
+    "CLAUDE.md",
+    
+    # 虚拟环境和包管理工具缓存
+    ".venv/**",
+    "venv/**", 
+    "env/**",
+    "ENV/**",
+    "env.bak/**",
+    "venv.bak/**",
+    ".rye/**",
+    ".pdm-cache/**", 
+    ".hatch/**",
+    
+    # 锁文件和包管理
+    "uv.lock",
+    "Pipfile.lock",
+    ".installed.cfg",
+    "MANIFEST",
+    
+    # 测试覆盖率报告
+    "coverage.xml",
+    "htmlcov/**",
+    "*.cover",
+    "*.py,cover",
+    ".hypothesis/**",
+    ".cache/**",
+    ".nox/**",
+    "nosetests.xml",
+    
+    # 构建和开发脚本
+    "Makefile",
+    "*.sh",
+    
+    # AI 和开发配置
+    ".ai-rules/**",
+    ".luarc.json",
+    ".history/**",
+    
+    # GitHub 和 CI/CD
+    ".github/**",
+    
+    # 系统文件
+    ".DS_Store",
+    "Thumbs.db",
+    
+    # 其他开发文件
+    ".python-version",
+    "*.log",
+    ".env",
+    ".env.*",
+    
+    # Jupyter 相关
+    ".ipynb_checkpoints/**",
+    "profile_default/**",
+    "ipython_config.py",
+    
+    # 临时文件和备份
+    "*.tmp",
+    "*.temp",
+    "*.bak",
+    "#*#",
+    ".#*",
+
 ]
 
 [tool.black]
@@ -160,7 +223,7 @@ exclude_lines = [
 # 优化后的镜像配置
 [tool.uv]
 # index-url = "https://pypi.tuna.tsinghua.edu.cn/simple/"
-index-url = "https://mirrors.tencent.com/pypi/simple"
+# index-url = "https://mirrors.tencent.com/pypi/simple"
 
 [dependency-groups]
 dev = [

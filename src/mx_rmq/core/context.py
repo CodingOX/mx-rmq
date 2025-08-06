@@ -38,15 +38,22 @@ class QueueContext:
         self.handlers: dict[str, Callable] = {}
 
         # 运行状态
+        ## 优雅停机的复杂性 优雅停机不是瞬间完成的
+        ## 而是一个包含多个步骤的过程，所以 2 个字段
+        ## 表示队列服务是否已启动并正常运行
         self.running = False
+        ## 表示队列服务正在执行优雅停机流程
         self.shutting_down = False
         self.initialized = False
 
         # 监控相关
+        # 卡死消息跟踪器 key为 topic value 为：[消息id,次数]
+        # 比如 对于notic 这个消息，其value为{"消息 1"：5，"消息 2":3} 
         self.stuck_messages_tracker: dict[str, dict[str, int]] = {}
 
         # 活跃任务管理
         self.active_tasks: set[asyncio.Task] = set()
+        
         self.shutdown_event = asyncio.Event()
 
 
@@ -65,7 +72,7 @@ class QueueContext:
         from loguru import logger
 
         if not callable(handler):
-            raise ValueError("处理器必须是可调用对象")
+            raise TypeError("处理器必须是可调用对象")
 
         self.handlers[topic] = handler
         logger.info(f"消息处理器注册成功, topic={topic}, handler={handler.__name__}")

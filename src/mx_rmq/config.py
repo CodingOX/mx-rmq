@@ -15,11 +15,13 @@ class MQConfig(BaseModel):
     # Redis连接配置
     redis_host: str = Field(default="localhost", description="Redis主机")
     redis_port: int = Field(default=6379, description="Redis端口")
+    
+
     redis_db: int = Field(default=0, ge=0, le=15, description="Redis数据库编号")
     redis_password: str | None = Field(default=None, description="Redis密码")
     redis_ssl: bool = Field(default=False, description="是否使用SSL连接")
     redis_max_connections: int = Field(
-        default=20, ge=5, le=100, description="Redis连接池大小"
+        default=30, ge=5, le=100, description="Redis连接池大小"
     )
 
     # 队列前缀配置,业务隔离
@@ -145,4 +147,12 @@ class MQConfig(BaseModel):
         if v.startswith("-") or v.endswith("-"):
             raise ValueError("队列前缀不能以连字符开头或结尾")
 
+        return v
+
+    @field_validator('redis_port')
+    @classmethod
+    def validate_redis_port(cls, v: int) -> int:
+        """验证Redis端口"""
+        if v < 1 or v > 65535:
+            raise ValueError(f"Redis端口必须在1-65535范围内，当前值: {v}")
         return v

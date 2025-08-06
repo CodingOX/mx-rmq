@@ -7,7 +7,7 @@ import uuid
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class MessageStatus(str, Enum):
@@ -99,7 +99,7 @@ class Message(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="消息唯一ID")
     version: str = Field(default="1.0", description="消息格式版本")
     topic: str = Field(description="主题名称")
-    payload: dict[str, Any] = Field(description="消息负载")
+  
     priority: MessagePriority = Field(
         default=MessagePriority.NORMAL, description="消息优先级"
     )
@@ -163,3 +163,21 @@ class Message(BaseModel):
         # 使用最后一个延迟值如果重试次数超过配置长度
         index = min(self.meta.retry_count - 1, len(retry_delays) - 1)
         return retry_delays[index]
+
+  
+    @field_validator('topic')
+    @classmethod
+    def validate_topic(cls, v: str) -> str:
+        """验证主题名称"""
+        if not v or not v.strip():
+            raise ValueError("主题名称不能为空")
+        return v.strip()
+    payload: dict[str, Any] = Field(description="消息负载")
+    
+    @field_validator('payload')
+    @classmethod
+    def validate_payload(cls, v: dict[str, Any]) -> dict[str, Any]:
+        """验证消息负载"""
+        if v is None:
+            raise ValueError("消息负载不能为None")
+        return v

@@ -56,7 +56,7 @@ class TestRedisConnectionManager:
                 assert call_kwargs['host'] == "localhost"
                 assert call_kwargs['port'] == 6379
                 assert call_kwargs['password'] is None
-                assert call_kwargs['max_connections'] == 20
+                assert call_kwargs['max_connections'] == 30
                 assert call_kwargs['db'] == 0
                 assert call_kwargs['decode_responses'] is True
                 

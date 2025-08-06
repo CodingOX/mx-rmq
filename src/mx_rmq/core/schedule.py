@@ -36,7 +36,7 @@ class ScheduleService:
         self.notification_event = asyncio.Event()
 
     async def process_delay_messages(self) -> None:
-        """延时消息处理协程 - 使用优化的调度逻辑"""
+        """延时消息处理协程"""
         if self.is_running:
             logger.debug("延时任务调度器已在运行")
             return
@@ -221,7 +221,7 @@ class ScheduleService:
         logger.warning("延时调度主循环已退出")
 
     async def pubsub_listener(self) -> None:
-        """监听pubsub通道 - 逻辑已大大简化"""
+        """监听pubsub通道"""
         retry_delay = 1
         pubsub = None
         consecutive_failures = 0
@@ -382,41 +382,86 @@ class ScheduleService:
 
     async def monitor_processing_queues(self) -> None:
         """监控processing队列"""
+        logger.info("Processing队列监控启动")
+        
         while self.context.is_running():
             try:
+                # 检查是否需要停止
+                if self.context.shutting_down or self.context.shutdown_event.is_set():
+                    logger.info("检测到停机信号，停止Processing队列监控")
+                    break
+                    
+                # 添加Redis连接检查
+                if not hasattr(self.context, 'redis') or self.context.redis is None:
+                    logger.warning("Redis连接不可用，停止监控")
+                    break
+                
                 for topic in self.context.handlers.keys():
+                    # 每个topic处理前再次检查停机状态
+                    if self.context.shutting_down or self.context.shutdown_event.is_set():
+                        logger.info("检测到停机信号，中断topic监控循环")
+                        break
+                    
                     await self._monitor_single_topic(topic)
                     await asyncio.sleep(1)
 
+                # 休息一点时间
                 await asyncio.sleep(self.context.config.processing_monitor_interval)
 
-            except Exception as e:
+            except Exception:
+                # 如果是连接相关错误且正在关闭，则优雅退出
+                if self.context.shutting_down or self.context.shutdown_event.is_set():
+                    logger.info("停机过程中的监控错误，停止Processing队列监控")
+                    break
                 logger.exception("Processing队列监控错误")
                 await asyncio.sleep(30)
+        
+        logger.info("Processing队列监控已停止")
+
+    ##### 私有方法 #### 
 
     async def _monitor_single_topic(self, topic: str) -> None:
-        """监控单个主题的processing队列"""
-        processing_key = self.context.get_global_topic_key(topic, TopicKeys.PROCESSING)
+        """监控、检查 单个主题的processing队列"""
+        # 添加连接检查
+        if self.context.shutting_down or self.context.shutdown_event.is_set():
+            return
+            
+        if not self.context.redis:
+            logger.warning(f"Redis连接不可用，跳过topic监控: {topic}")
+            return
+        
+        try:
+            processing_key = self.context.get_global_topic_key(topic, TopicKeys.PROCESSING)
 
-        # 获取processing队列中的所有消息
-        processing_ids = await self.context.redis.lrange(processing_key, 0, -1)  # type: ignore
+            # 获取processing队列中的所有消息
+            processing_ids = await self.context.redis.lrange(processing_key, 0, -1)  # type: ignore
 
-        # 初始化该topic的跟踪器
-        if topic not in self.context.stuck_messages_tracker:
-            self.context.stuck_messages_tracker[topic] = {}
+            # 初始化该topic的跟踪器
+            if topic not in self.context.stuck_messages_tracker:
+                self.context.stuck_messages_tracker[topic] = {}
 
-        current_tracker = self.context.stuck_messages_tracker[topic]
-        current_ids_set = set(processing_ids)
+            current_tracker = self.context.stuck_messages_tracker[topic]
+            
+            # 更新跟踪状态
+            current_ids_set = set(processing_ids)
+            self._update_message_tracking(current_tracker, processing_ids, current_ids_set)
 
-        # 更新跟踪状态
-        self._update_message_tracking(current_tracker, processing_ids, current_ids_set)
-
-        # 检查并处理卡死的消息
-        stuck_messages = self._identify_stuck_messages(current_tracker)
-        if stuck_messages:
-            await self._handle_stuck_messages(
-                stuck_messages, topic, processing_key, current_tracker
-            )
+            # 检查并处理卡死的消息
+            stuck_messages = self._identify_stuck_messages(current_tracker)
+            if stuck_messages:
+                await self._handle_stuck_messages(
+                    stuck_messages, topic, processing_key, current_tracker
+                )
+        except (ConnectionError, TimeoutError):
+            if self.context.shutting_down or self.context.shutdown_event.is_set():
+                logger.debug(f"停机过程中的连接错误，跳过topic监控: {topic}")
+                return
+            raise
+        except Exception:
+            if self.context.shutting_down or self.context.shutdown_event.is_set():
+                logger.debug(f"停机过程中的监控错误，跳过topic监控: {topic}")
+                return
+            raise
 
     def _update_message_tracking(
         self, tracker: dict[str, int], processing_ids: list, current_ids_set: set
@@ -425,6 +470,7 @@ class ScheduleService:
         # 更新连续检测计数
         for msg_id in processing_ids:
             if msg_id in tracker:
+                # tracker 的数据格式为 key为消息 id -value 为times
                 tracker[msg_id] += 1
             else:
                 tracker[msg_id] = 1
@@ -481,7 +527,10 @@ class ScheduleService:
             await asyncio.sleep(self.context.config.monitor_interval)
 
     async def _collect_metrics(self) -> dict[str, Any]:
-        """收集系统指标"""
+        """
+            收集系统指标
+            收集的仅仅时自己注册的处理器，不包含未注册的
+        """
         metrics = {}
 
         try:

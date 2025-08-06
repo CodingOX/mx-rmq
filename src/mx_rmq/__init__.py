@@ -15,6 +15,7 @@ from .log_config import (
 from .message import Message, MessageMeta, MessagePriority, MessageStatus
 from .monitoring import MetricsCollector, QueueMetrics, ProcessingMetrics
 from .queue import RedisMessageQueue
+from .signal_handler import SignalHandler, create_queue_signal_handler
 
 __version__ = "3.0.0"
 
@@ -26,6 +27,9 @@ __all__ = [
     "MessagePriority",
     "MessageStatus",
     "MessageMeta",
+    # 信号处理工具
+    "SignalHandler",
+    "create_queue_signal_handler",
     # 日志配置
     "setup_logger",
     "setup_simple_logger",

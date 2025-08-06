@@ -3,7 +3,6 @@ Redis消息队列核心实现 - 重构为组合模式
 """
 
 import asyncio
-import signal
 import time
 import uuid
 from collections.abc import Callable
@@ -118,15 +117,7 @@ class RedisMessageQueue:
             self._context, self._task_queue, self._connection_manager
         )
 
-    def _setup_signal_handlers(self) -> None:
-        """设置信号处理器"""
 
-        def signal_handler(signum: int, frame: Any) -> None:
-            logger.info(f"收到停机信号, signal={signum}")
-            asyncio.create_task(self._graceful_shutdown())
-
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
 
     async def cleanup(self) -> None:
         """清理资源"""
@@ -295,6 +286,41 @@ class RedisMessageQueue:
 
         if not self._context.handlers:
             logger.warning("未注册任何消息处理器，队列将启动但不会处理业务消息")
+            return
+        
+        # 验证Redis连接池大小
+        self._validate_connection_pool_size()
+
+    def _validate_connection_pool_size(self) -> None:
+        """验证Redis连接池大小是否足够"""
+        # 卫语句：如果context不存在则直接返回
+        if not self._context:
+            return
+        
+        topic_count = len(self._context.handlers)
+        max_connections = self.config.redis_max_connections
+        
+        # 预留连接数计算：
+        # - 延时消息处理: 1个连接
+        # - 过期消息监控: 1个连接  
+        # - Processing队列监控: 1个连接
+        # - 系统监控: 1个连接
+        # - 消息生产: 2个连接
+        # - 其他操作预留: 2个连接
+        reserved_connections = 8
+        required_connections = topic_count + reserved_connections
+        
+        # 卫语句：连接数足够则直接返回
+        if max_connections >= required_connections:
+            return
+        
+        # 连接数不足，抛出详细错误信息
+        raise ValueError(
+            f"Redis连接池大小不足：当前配置{max_connections}个连接，"
+            f"需要至少{required_connections}个连接（{topic_count}个topic + {reserved_connections}个预留）。\n"
+            f"请增加redis_max_connections配置至{required_connections}或更高。\n"
+            f"建议配置：redis_max_connections = {required_connections + 5}  # 额外预留5个连接"
+        )
 
     def _get_task_definitions(self) -> list[dict[str, Any]]:
         """获取任务定义列表
@@ -325,7 +351,9 @@ class RedisMessageQueue:
             }
         )
 
-        # 3. 过期消息监控协程
+
+        # 3. 过期消息：expired 监控协程
+        ## 来自手动添加
         task_definitions.append(
             {
                 "name": "expired_monitor",
@@ -334,7 +362,8 @@ class RedisMessageQueue:
             }
         )
 
-        # 4. Processing队列监控协程
+        # 4. Processing队列监控协程.
+        ## 来自 blmove 
         task_definitions.append(
             {
                 "name": "processing_monitor",
@@ -381,18 +410,13 @@ class RedisMessageQueue:
 
         return task
 
-    async def _create_and_run_tasks(self, is_background: bool = False) -> None:
-        """创建并运行所有任务
-
-        Args:
-            is_background: 是否为后台模式，影响错误处理和清理逻辑
-        """
+    async def _create_and_run_tasks(self) -> None:
+        """创建并运行所有任务 """
         assert self._context is not None
 
         # 记录启动日志
-        mode_text = "后台" if is_background else "前台"
         logger.info(
-            f"{mode_text}启动消息消费, topics={list(self._context.handlers.keys())}, "
+            f"启动消息消费, topics={list(self._context.handlers.keys())}, "
             f"max_workers={self.config.max_workers}"
         )
 
@@ -409,18 +433,12 @@ class RedisMessageQueue:
             await asyncio.gather(*tasks, return_exceptions=True)
 
         except Exception as e:
-            error_msg = (
-                "后台消息消费过程中出错" if is_background else "消息消费过程中出错"
-            )
+            error_msg = ("消息消费过程中出错")
             logger.exception(error_msg)
             raise
         finally:
-            # 清理任务
+            # 清理任务（所有模式都需要清理任务）
             await self._cleanup_tasks()
-
-            # 非后台模式需要额外清理资源
-            if not is_background:
-                await self.cleanup()
 
     def register_handler(self, topic: str, handler: Callable) -> None:
         """
@@ -431,7 +449,7 @@ class RedisMessageQueue:
             handler: 消息处理函数，接收payload参数
         """
         if not callable(handler):
-            raise ValueError("处理器必须是可调用对象")
+            raise TypeError("处理器必须是可调用对象")
 
         """注册处理器装饰器"""
 
@@ -451,14 +469,15 @@ class RedisMessageQueue:
         # 准备消费环境
         await self._prepare_for_consuming()
 
-        # 创建并运行任务
-        await self._create_and_run_tasks(is_background=False)
+        try:
+            # 创建并运行任务
+            await self._create_and_run_tasks()
+        finally:
+            # 前台模式结束时清理资源
+            await self.cleanup()
 
-    async def start_background(self, manage_signals: bool = True) -> asyncio.Task:
+    async def start_background(self) -> asyncio.Task:
         """非阻塞启动消费，返回后台任务
-
-        Args:
-            manage_signals: 是否由队列管理信号（SIGINT, SIGTERM）。在嵌入式应用（如FastAPI）中应设为False。
 
         Returns:
             asyncio.Task: 后台运行的任务对象
@@ -474,24 +493,22 @@ class RedisMessageQueue:
 
         # 创建后台任务
         self._background_task = asyncio.create_task(
-            self._run_background_services(manage_signals=manage_signals),
+            self._run_background_services(),
             name="mx_rmq_background",
         )
         self._start_time = time.time()
 
         return self._background_task
 
-    async def _run_background_services(self, manage_signals: bool = True) -> None:
+    async def _run_background_services(self) -> None:
         """运行后台服务（内部方法）"""
         if not self._context:
             raise RuntimeError("队列未初始化")
 
         self._context.running = True
-        if manage_signals:
-            self._setup_signal_handlers()
 
         # 创建并运行任务
-        await self._create_and_run_tasks(is_background=True)
+        await self._create_and_run_tasks()
 
     async def stop(self) -> None:
         """停止消息队列
@@ -505,7 +522,7 @@ class RedisMessageQueue:
         logger.info("开始停止消息队列...")
 
         try:
-            # 执行优雅停机
+            # 执行优雅停机（不包括Redis清理）
             await self._graceful_shutdown()
 
             # 等待后台任务完成
@@ -516,12 +533,13 @@ class RedisMessageQueue:
                 except asyncio.CancelledError:
                     pass
 
-        except Exception as e:
+        except Exception:
             logger.exception("停止消息队列时出错")
         finally:
+            # 最后清理Redis连接
+            await self.cleanup()
             self._background_task = None
             self._start_time = None
-            await self.cleanup()
 
         logger.info("消息队列已停止")
     
@@ -742,7 +760,11 @@ class RedisMessageQueue:
         self._context.shutting_down = True
 
         try:
-            # 0. 停止调度器服务
+            # 1. 首先设置关闭事件，让监控任务知道要停止
+            self._context.shutdown_event.set()
+            logger.info("【stop】已设置关闭事件")
+
+            # 2. 停止调度器服务（包括监控任务）
             logger.info("【stop】停止调度器服务...")
             if hasattr(self, "_monitor_service") and self._monitor_service:
                 try:
@@ -754,23 +776,25 @@ class RedisMessageQueue:
                 except Exception as e:
                     logger.exception("【stop】停止调度器服务失败")
 
-            # 1. 停止接收新消息
-            logger.info("【stop】停止消息分发...")
-
-            # 2. 等待本地队列消息处理完成
-            logger.info("【stop】等待本地队列消息处理完成...")
-            await asyncio.wait_for(self._wait_for_local_queue_empty(), timeout=30.0)
-
-            # 3. 等待所有消费协程完成当前任务
-            logger.info("【stop】等待活跃消费者完成...")
-            await asyncio.wait_for(self._wait_for_consumers_finish(), timeout=30.0)
-
-            # 4. 取消所有后台任务
+            # 3. 取消所有后台任务
             logger.info("【stop】取消后台任务...")
             await asyncio.wait_for(self._cleanup_tasks(), timeout=10.0)
 
-            # 5. 设置关闭事件
-            self._context.shutdown_event.set()
+            # 4. 停止接收新消息
+            logger.info("【stop】停止消息分发...")
+
+            # 5. 等待本地队列消息处理完成
+            logger.info("【stop】等待本地队列消息处理完成...")
+            try:
+                await asyncio.wait_for(self._wait_for_local_queue_empty(), timeout=10.0)
+            except asyncio.TimeoutError:
+                remaining = self._task_queue.qsize()
+                logger.warning(f"【stop】等待本地队列清空超时，剩余消息数量, remaining_count={remaining}")
+
+            # 6. 等待所有消费协程完成当前任务
+            logger.info("【stop】等待活跃消费者完成...")
+            await asyncio.wait_for(self._wait_for_consumers_finish(10), timeout=10.0)
+
             logger.info("【stop】优雅停机完成")
 
         except asyncio.TimeoutError:
@@ -780,29 +804,16 @@ class RedisMessageQueue:
 
     async def _wait_for_local_queue_empty(self) -> None:
         """等待本地队列清空"""
-        timeout = 30  # 30秒超时
-        start_time = time.time()
-
         while not self._task_queue.empty():
-            if time.time() - start_time > timeout:
-                logger.warning(
-                    f"【stop】等待本地队列清空超时，剩余消息数量, remaining_count={self._task_queue.qsize()}"
-                )
-                break
+            # 支持检测当前协程是否被取消（由外部 asyncio.wait_for 控制超时）
             await asyncio.sleep(0.1)
 
-        if self._task_queue.empty():
-            logger.info("【stop】本地队列已清空")
-        else:
-            remaining = self._task_queue.qsize()
-            logger.warning(f"【stop】本地队列仍有消息, remaining_count={remaining}")
+        logger.info("【stop】本地队列已清空")
 
-    async def _wait_for_consumers_finish(self) -> None:
+    async def _wait_for_consumers_finish(self,timeout:int) -> None:
         """等待消费者完成"""
         if not self._context:
             return
-
-        timeout = 30  # 30秒超时
         start_time = time.time()
 
         # 等待一段时间让当前处理的消息完成
